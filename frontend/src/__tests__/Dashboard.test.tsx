@@ -1,20 +1,66 @@
 import React from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
 
-vi.mock("../stellar", () => ({
-  buildCancelTx: vi.fn(),
-  buildPayPerUseTx: vi.fn(),
-  getSubscription: vi.fn(() => Promise.resolve(null)),
-  getAllowance: vi.fn(() => Promise.resolve(0n)),
-  getDailyLimit: vi.fn(() => Promise.resolve(null)),
-  getDailySpent: vi.fn(() => Promise.resolve(0n)),
-  explorerTxUrl: vi.fn((hash: string) => `https://stellar.expert/tx/${hash}`),
-  server: {
-    getTransaction: vi.fn(() => Promise.resolve({ status: "SUCCESS" })),
-  },
-}));
+const toast = {
+  error: vi.fn(),
+  success: vi.fn(),
+};
+
+vi.mock("../hooks/useToast", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../hooks/useToast")>();
+  return {
+    ...actual,
+    useToast: () => {
+      const hook = actual.useToast();
+      return {
+        ...hook,
+        addToast: (
+          message: string,
+          variant: "success" | "error" | "info" = "info",
+          txHash?: string
+        ) => {
+          if (variant === "error") toast.error(message);
+          if (variant === "success") toast.success(message);
+          return hook.addToast(message, variant, txHash);
+        },
+      };
+    },
+  };
+});
+
+vi.mock("../stellar", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../stellar")>();
+  return {
+    ...actual,
+    RPC_URL: "https://soroban-testnet.stellar.org",
+    getAllowance: vi.fn(() => Promise.resolve(0n)),
+    getTrialEnd: vi.fn(() => Promise.resolve(null)),
+    getSubscription: vi.fn(() => Promise.resolve(null)),
+    getDailyLimit: vi.fn(() => Promise.resolve(null)),
+    getDailySpent: vi.fn(() => Promise.resolve(0n)),
+    getSubscriptionHealth: vi.fn(() =>
+      Promise.resolve({
+        active: true,
+        charge_due: false,
+        within_grace: false,
+        has_sufficient_allowance: true,
+        is_paused: false,
+        trial_active: false,
+        daily_limit_set: false,
+      })
+    ),
+    simulateCharge: vi.fn(() => Promise.resolve("WouldSucceed")),
+    fetchEvents: vi.fn(() => Promise.resolve([])),
+    buildCancelTx: vi.fn(),
+    buildPayPerUseTx: vi.fn(),
+    explorerTxUrl: vi.fn((hash: string) => `https://stellar.expert/tx/${hash}`),
+    server: {
+      getTransaction: vi.fn(() => Promise.resolve({ status: "SUCCESS" })),
+    },
+  };
+});
 vi.mock("../hooks/usePolling", () => ({ usePolling: () => {} }));
 vi.mock("../hooks/useRpcHealth", () => ({
   useRpcHealth: vi.fn(() => ({ status: "healthy", latencyMs: 50, error: null })),
@@ -24,6 +70,7 @@ vi.mock("../components/SubscriptionHistory", () => ({
 }));
 
 import * as stellar from "../stellar";
+import type { ChargeSimResult, SubscriptionHealth } from "../stellar";
 import { useRpcHealth } from "../hooks/useRpcHealth";
 import Dashboard from "../components/Dashboard";
 
@@ -36,11 +83,27 @@ const ACTIVE_SUB = {
   paused: false,
 };
 
-function setup(sub: typeof ACTIVE_SUB | null = ACTIVE_SUB) {
+const HEALTHY_HEALTH: SubscriptionHealth = {
+  active: true,
+  charge_due: false,
+  within_grace: false,
+  has_sufficient_allowance: true,
+  is_paused: false,
+  trial_active: false,
+  daily_limit_set: false,
+};
+
+function setup(
+  sub: typeof ACTIVE_SUB | null = ACTIVE_SUB,
+  health: SubscriptionHealth | null = HEALTHY_HEALTH,
+  sim: ChargeSimResult | null = "WouldSucceed"
+) {
   vi.mocked(stellar.getSubscription).mockResolvedValue(sub);
   vi.mocked(stellar.getAllowance).mockResolvedValue(BigInt(0));
   vi.mocked(stellar.getDailyLimit).mockResolvedValue(null);
   vi.mocked(stellar.getDailySpent).mockResolvedValue(BigInt(0));
+  vi.mocked(stellar.getSubscriptionHealth).mockResolvedValue(health);
+  vi.mocked(stellar.simulateCharge).mockResolvedValue(sim);
   vi.mocked(stellar.server.getTransaction).mockResolvedValue({ status: "SUCCESS" } as any);
 
   const onSign = vi.fn().mockResolvedValue("txhash1234567890");
@@ -52,11 +115,37 @@ function setup(sub: typeof ACTIVE_SUB | null = ACTIVE_SUB) {
 }
 
 describe("Dashboard", () => {
-  afterEach(() => vi.resetAllMocks());
+  afterEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(useRpcHealth).mockReturnValue({
+      status: "healthy",
+      latencyMs: 50,
+      error: null,
+    } as ReturnType<typeof useRpcHealth>);
+    toast.error.mockClear();
+    toast.success.mockClear();
+  });
 
   it("shows no-subscription message when sub is null", async () => {
     setup(null);
     await waitFor(() => expect(screen.getByText(/No active subscription found/)).toBeTruthy());
+  });
+
+  it("shows a distinct retryable error state when getSubscription fails", async () => {
+    vi.mocked(stellar.getSubscription).mockRejectedValue(new Error("RPC unreachable"));
+
+    render(<Dashboard userKey="GUSER" onSign={vi.fn()} refreshTrigger={0} announce={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByTestId("subscription-error")).toBeTruthy());
+    expect(screen.getByText(/Couldn't load your subscription/i)).toBeTruthy();
+    expect(screen.getByText(/RPC unreachable/i)).toBeTruthy();
+    expect(screen.queryByText(/No active subscription found/)).not.toBeInTheDocument();
+
+    const retry = screen.getByRole("button", { name: /retry/i });
+    await userEvent.click(retry);
+    await waitFor(() =>
+      expect(vi.mocked(stellar.getSubscription).mock.calls.length).toBeGreaterThanOrEqual(2)
+    );
   });
 
   it("shows an inline RPC warning when RPC is unhealthy", async () => {
@@ -105,11 +194,12 @@ describe("Dashboard", () => {
     vi.mocked(stellar.buildPayPerUseTx).mockResolvedValue("ppu-xdr");
     setup();
 
-    await waitFor(() => screen.getByRole("spinbutton"));
+    await waitFor(() => screen.getAllByRole("spinbutton").length > 0);
 
-    const input = screen.getByRole("spinbutton");
-    await userEvent.clear(input);
-    await userEvent.type(input, "1");
+    // Replace single getByRole with getAllByRole and pick the pay-per-use input:
+    const amountInputs = screen.getAllByRole("spinbutton");
+    await userEvent.clear(amountInputs[0]);
+    await userEvent.type(amountInputs[0], "10");
     await userEvent.click(screen.getByRole("button", { name: /pay/i }));
 
     await waitFor(() => expect(screen.getByText(/Paid!/)).toBeTruthy());
@@ -123,6 +213,55 @@ describe("Dashboard", () => {
     await userEvent.click(screen.getByRole("button", { name: /cancel subscription/i }));
     await userEvent.click(screen.getByRole("button", { name: /confirm/i }));
 
-    await waitFor(() => expect(screen.getByText(/user rejected/i)).toBeTruthy());
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/user rejected/i));
+    });
+  });
+
+  it("shows health Good and keeps pay enabled for a healthy subscription", async () => {
+    vi.mocked(stellar.buildPayPerUseTx).mockResolvedValue("ppu-xdr");
+    setup();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("subscription-health-status")).toHaveTextContent("Good");
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("simulate-charge-readout")).toHaveTextContent(/would succeed/i);
+    });
+    expect(screen.queryByTestId("ppu-blocked-reason")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("error-recovery")).not.toBeInTheDocument();
+  });
+
+  it("disables pay-per-use when the subscription is paused", async () => {
+    setup(
+      { ...ACTIVE_SUB, paused: true },
+      { ...HEALTHY_HEALTH, is_paused: true },
+      "SubscriptionPaused"
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("ppu-blocked-reason")).toHaveTextContent(/paused/i);
+    });
+    expect(screen.getByRole("button", { name: /pay now/i })).toBeDisabled();
+  });
+
+  it("warns but does not disable pay when allowance is insufficient", async () => {
+    setup(
+      ACTIVE_SUB,
+      { ...HEALTHY_HEALTH, has_sufficient_allowance: false },
+      "InsufficientAllowance"
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("ppu-warning-reason")).toHaveTextContent(
+        /allowance is insufficient/i
+      );
+    });
+    expect(screen.getByTestId("error-recovery")).toHaveAttribute("data-proactive", "true");
+    expect(
+      within(screen.getByTestId("error-recovery")).getByRole("button", {
+        name: /increase allowance/i,
+      })
+    ).toBeInTheDocument();
   });
 });

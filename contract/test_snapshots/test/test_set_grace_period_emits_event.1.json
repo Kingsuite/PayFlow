@@ -23,6 +23,7 @@
         }
       ]
     ],
+    [],
     [
       [
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
@@ -79,6 +80,7 @@
         }
       ]
     ],
+    [],
     [],
     [
       [
@@ -264,6 +266,18 @@
                         },
                         "val": {
                           "u64": 7200
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "WhitelistEnabled"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "bool": false
                         }
                       }
                     ]

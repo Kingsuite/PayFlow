@@ -2,55 +2,8 @@ import js from "@eslint/js";
 import tsPlugin from "@typescript-eslint/eslint-plugin";
 import tsParser from "@typescript-eslint/parser";
 import prettierConfig from "eslint-config-prettier";
-
-const browserGlobals = {
-  window: "readonly",
-  document: "readonly",
-  console: "readonly",
-  setTimeout: "readonly",
-  clearTimeout: "readonly",
-  setInterval: "readonly",
-  clearInterval: "readonly",
-  localStorage: "readonly",
-  sessionStorage: "readonly",
-  navigator: "readonly",
-  location: "readonly",
-  history: "readonly",
-  fetch: "readonly",
-  Request: "readonly",
-  Response: "readonly",
-  Headers: "readonly",
-  URL: "readonly",
-  URLSearchParams: "readonly",
-  AbortController: "readonly",
-  AbortSignal: "readonly",
-  HTMLElement: "readonly",
-  HTMLInputElement: "readonly",
-  HTMLSelectElement: "readonly",
-  HTMLButtonElement: "readonly",
-  HTMLFormElement: "readonly",
-  KeyboardEvent: "readonly",
-  MouseEvent: "readonly",
-  Event: "readonly",
-  CustomEvent: "readonly",
-  Blob: "readonly",
-  File: "readonly",
-  FileReader: "readonly",
-  performance: "readonly",
-  requestAnimationFrame: "readonly",
-  cancelAnimationFrame: "readonly",
-  getComputedStyle: "readonly",
-  global: "readonly",
-  process: "readonly",
-  MutationObserver: "readonly",
-  ResizeObserver: "readonly",
-  IntersectionObserver: "readonly",
-  crypto: "readonly",
-  HTMLDivElement: "readonly",
-  HTMLSpanElement: "readonly",
-  MediaQueryList: "readonly",
-  React: "readonly",
-};
+import globals from "globals";
+import reactHooks from "eslint-plugin-react-hooks";
 
 const vitestGlobals = {
   describe: "readonly",
@@ -65,6 +18,17 @@ const vitestGlobals = {
   vitest: "readonly",
 };
 
+const typescriptRules = {
+  ...tsPlugin.configs.recommended.rules,
+  // TypeScript already resolves identifiers (including DOM and Node types), so
+  // no-undef only produces false positives — e.g. BeforeUnloadEvent, Storage,
+  // DOMException, __dirname. Keep the compiler authoritative.
+  "no-undef": "off",
+  "react-hooks/rules-of-hooks": "error",
+  "react-hooks/exhaustive-deps": "warn",
+  "@typescript-eslint/no-explicit-any": "warn",
+};
+
 export default [
   js.configs.recommended,
   {
@@ -77,13 +41,10 @@ export default [
         sourceType: "module",
         ecmaFeatures: { jsx: true },
       },
-      globals: browserGlobals,
+      globals: { ...globals.browser, ...globals.node },
     },
-    plugins: { "@typescript-eslint": tsPlugin },
-    rules: {
-      ...tsPlugin.configs.recommended.rules,
-      "@typescript-eslint/no-explicit-any": "warn",
-    },
+    plugins: { "@typescript-eslint": tsPlugin, "react-hooks": reactHooks },
+    rules: typescriptRules,
   },
   {
     files: ["src/**/__tests__/**/*.{ts,tsx}", "src/**/*.test.{ts,tsx}"],
@@ -94,13 +55,10 @@ export default [
         sourceType: "module",
         ecmaFeatures: { jsx: true },
       },
-      globals: { ...browserGlobals, ...vitestGlobals },
+      globals: { ...globals.browser, ...globals.node, ...vitestGlobals },
     },
-    plugins: { "@typescript-eslint": tsPlugin },
-    rules: {
-      ...tsPlugin.configs.recommended.rules,
-      "@typescript-eslint/no-explicit-any": "warn",
-    },
+    plugins: { "@typescript-eslint": tsPlugin, "react-hooks": reactHooks },
+    rules: typescriptRules,
   },
   prettierConfig,
 ];

@@ -23,6 +23,7 @@
         }
       ]
     ],
+    [],
     [
       [
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
@@ -79,6 +80,7 @@
         }
       ]
     ],
+    [],
     [],
     [],
     [
@@ -268,6 +270,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "created_at"
+                      },
+                      "val": {
+                        "u64": 0
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "interval"
                       },
                       "val": {
@@ -381,7 +391,19 @@
                           ]
                         },
                         "val": {
-                          "u32": 2
+                          "u32": 3
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "WhitelistEnabled"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "bool": false
                         }
                       }
                     ]
@@ -1124,7 +1146,7 @@
             "data": {
               "vec": [
                 {
-                  "u32": 2
+                  "u32": 3
                 },
                 {
                   "u32": 1
@@ -1217,6 +1239,14 @@
                       "hi": 0,
                       "lo": 10000000
                     }
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "created_at"
+                  },
+                  "val": {
+                    "u64": 0
                   }
                 },
                 {

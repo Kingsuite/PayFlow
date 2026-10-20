@@ -25,10 +25,18 @@
  *   }
  * };
  */
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { server } from "../stellar";
 import { useRpcHealthContext } from "../context/RpcHealthContext";
-import { enqueueTransaction } from "../services/txQueue";
+import {
+  enqueueTransaction,
+  enqueue,
+  markSubmitted,
+  markConfirmed,
+  markFailed,
+  setRetry,
+} from "../services/txQueue";
+import { ensureMainnetConfirmed } from "../utils/network";
 
 export type TxStatus = "idle" | "pending" | "success" | "failed";
 
@@ -36,7 +44,7 @@ export interface UseTransactionResult {
   status: TxStatus;
   hash: string | null;
   error: string | null;
-  submit: (buildAndSign: () => Promise<string>) => Promise<string>;
+  submit: (buildAndSign: () => Promise<string>, label?: string) => Promise<string>;
 }
 
 const POLL_INTERVAL_MS = 2000;
@@ -49,10 +57,34 @@ export function useTransaction(): UseTransactionResult {
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { circuitOpen } = useRpcHealthContext();
 
+  // Clean up any pending timer on unmount
+  useEffect(() => {
+    return () => {
+      if (timerRef.current !== null) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, []);
+
+  const clearTimer = useCallback(() => {
+    if (timerRef.current !== null) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  }, []);
+
   const submit = useCallback(
-    async (buildAndSign: () => Promise<string>): Promise<string> => {
+    async (buildAndSign: () => Promise<string>, label = "Transaction"): Promise<string> => {
       if (circuitOpen) {
         const msg = "RPC unavailable";
+        setError(msg);
+        setStatus("failed");
+        throw new Error(msg);
+      }
+      // Mainnet safety gate — require explicit confirmation once per session before any mutating tx
+      if (!ensureMainnetConfirmed()) {
+        const msg = "Mainnet transaction cancelled";
         setError(msg);
         setStatus("failed");
         throw new Error(msg);
@@ -61,26 +93,52 @@ export function useTransaction(): UseTransactionResult {
       setHash(null);
       setError(null);
 
+      // Create a persisted UI queue entry so interrupted signings survive reload.
+      // The retry callback re-simulates before resubmitting (caller rebuilds XDR with simulate).
+      const uiId = enqueue(label, null);
+      const retryFn = async () => {
+        // Re-run the original buildAndSign with a fresh simulation; useTransaction will re-enter its own queue
+        await submit(buildAndSign, label);
+      };
+      setRetry(uiId, retryFn);
+
       let txHash: string;
       try {
-        txHash = await enqueueTransaction(buildAndSign, "Transaction");
+        txHash = await enqueueTransaction(buildAndSign, label);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
+        // Distinguish Freighter close / user reject (interrupted) from other failures
+        const isInterrupted = /close|reject|cancel|dismiss/i.test(msg);
+        // Keep pending entry as failed but retain retry; panel will show Resume/Discard + warning
+        markFailed(uiId, msg);
+        // Preserve retry for interrupted states so user can resume safely (re-simulates)
+        if (isInterrupted) {
+          setRetry(uiId, retryFn);
+        }
         setError(msg);
         setStatus("failed");
         throw e;
       }
 
+      markSubmitted(uiId, txHash);
+      // Retry stays available until confirmed, so user can resume if polling is lost
+      setRetry(uiId, retryFn);
       setHash(txHash);
 
       // Poll until confirmed or timed out
       const deadline = Date.now() + POLL_TIMEOUT_MS;
 
+      // Clear any existing timer before starting a new poll cycle
+      clearTimer();
+
       await new Promise<void>((resolve) => {
         function poll() {
           if (Date.now() > deadline) {
-            setError("Transaction confirmation timed out");
+            const timeoutMsg = "Transaction confirmation timed out";
+            markFailed(uiId, timeoutMsg);
+            setError(timeoutMsg);
             setStatus("failed");
+            clearTimer();
             resolve();
             return;
           }
@@ -89,11 +147,16 @@ export function useTransaction(): UseTransactionResult {
             .getTransaction(txHash)
             .then((result) => {
               if (result.status === "SUCCESS") {
+                markConfirmed(uiId);
                 setStatus("success");
+                clearTimer();
                 resolve();
               } else if (result.status === "FAILED") {
-                setError("Transaction failed on-chain");
+                const failMsg = "Transaction failed on-chain";
+                markFailed(uiId, failMsg);
+                setError(failMsg);
                 setStatus("failed");
+                clearTimer();
                 resolve();
               } else {
                 // NOT_FOUND or still pending — keep polling
@@ -111,7 +174,7 @@ export function useTransaction(): UseTransactionResult {
 
       return txHash;
     },
-    [circuitOpen]
+    [circuitOpen, clearTimer]
   );
 
   return { status, hash, error, submit };

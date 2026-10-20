@@ -23,6 +23,7 @@
         }
       ]
     ],
+    [],
     [
       [
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
@@ -79,6 +80,7 @@
         }
       ]
     ],
+    [],
     [],
     [
       [
@@ -257,6 +259,18 @@
                           "vec": [
                             {
                               "symbol": "ContractPaused"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "bool": false
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "WhitelistEnabled"
                             }
                           ]
                         },

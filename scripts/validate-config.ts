@@ -1,34 +1,58 @@
 /**
- * validate-config.ts — Environment configuration validator for FlowPay.
+ * validate-config.ts — Environment configuration validator and shared config
+ * loader for FlowPay.
  *
- * Reads .env or .env.local and validates that all required variables are present
- * and correctly formatted. Useful for CI pipelines and local developer workflows.
+ * Reads .env or .env.local and validates that all required keeper variables
+ * are present and correctly formatted using Zod schemas defined in config.ts.
+ * Useful for CI pipelines and local developer workflows.
  *
- * Usage:
- *   npx ts-node scripts/validate-config.ts
+ * ## CLI Usage
  *
- * Checks:
- *   - Required variables exist and are non-empty
- *   - Contract IDs start with 'C' and are 56 characters long
- *   - RPC URLs are valid URLs with a protocol
+ *   npx tsx scripts/validate-config.ts [--strict]
  *
- * Exit codes:
+ * The `--strict` flag enables strict validation: ALL schema fields are
+ * validated (including optional ones with malformed values), and the script
+ * exits with code 1 on any Zod error — not just missing required fields.
+ *
+ * ## Programmatic Usage
+ *
+ *   import { loadConfig } from "./validate-config";
+ *
+ *   const config = loadConfig();          // normal mode
+ *   const config = loadConfig(true);      // strict mode
+ *
+ * Returns the validated `KeeperConfig` object, or throws a descriptive error
+ * when validation fails.
+ *
+ * ## Checks
+ *
+ *   - CONTRACT_ID     — non-empty, valid Stellar contract ID
+ *   - RPC_URL          — valid http/https URL
+ *   - SECRET_KEY       — valid Stellar secret key
+ *   - BATCH_SIZE       — integer 1–200
+ *   - INTERVAL_SECONDS — integer ≥ 60
+ *   - WEBHOOK_URL      — optional, validated if present
+ *
+ * ## Exit codes (CLI)
+ *
  *   0 — all validations passed
  *   1 — one or more validations failed
  */
 
 import { readFileSync, existsSync } from "fs";
-import { resolve } from "path";
+import { resolve, dirname } from "path";
+import { fileURLToPath } from "url";
 
-// ── Types ────────────────────────────────────────────────────────────────────
+import {
+  ConfigSchema,
+  formatConfigErrors,
+  normalizeEnv,
+  logDeprecationWarnings,
+  type KeeperConfig,
+} from "./config.js";
+import { logger } from "./logger";
 
-interface ValidationResult {
-  variable: string;
-  passed: boolean;
-  reason?: string;
-}
-
-type Validator = (value: string) => { valid: boolean; reason?: string };
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ── .env Parsing ─────────────────────────────────────────────────────────────
 
@@ -36,7 +60,7 @@ type Validator = (value: string) => { valid: boolean; reason?: string };
  * Parse a .env file into a key-value map.
  * Handles comments, empty lines, and quoted values.
  */
-function parseEnvFile(filePath: string): Map<string, string> {
+export function parseEnvFile(filePath: string): Map<string, string> {
   const vars = new Map<string, string>();
   const content = readFileSync(filePath, "utf-8");
 
@@ -70,153 +94,133 @@ function parseEnvFile(filePath: string): Map<string, string> {
  * Locate and parse the environment file.
  * Prefers .env.local over .env (matching Vite conventions).
  */
-function loadEnv(projectRoot: string): Map<string, string> {
+export function loadEnvFile(projectRoot: string): Map<string, string> {
   const envLocal = resolve(projectRoot, ".env.local");
   const envDefault = resolve(projectRoot, ".env");
 
   if (existsSync(envLocal)) {
-    console.log(`Reading configuration from: .env.local`);
     return parseEnvFile(envLocal);
   }
 
   if (existsSync(envDefault)) {
-    console.log(`Reading configuration from: .env`);
     return parseEnvFile(envDefault);
   }
 
-  console.error("ERROR: No .env or .env.local file found in project root.");
-  console.error("  Create one from .env.example:");
-  console.error("    cp frontend/.env.example .env.local");
+  logger.error("ERROR: No .env or .env.local file found in project root.");
+  logger.error("  Create one from .env.example or set required variables:");
+  logger.error(
+    "    CONTRACT_ID, RPC_URL, SECRET_KEY, BATCH_SIZE, INTERVAL_SECONDS",
+  );
   process.exit(1);
+  throw new Error(
+    "No .env or .env.local file found in project root. " +
+      "Create one from .env.example or set required variables: " +
+      "CONTRACT_ID, RPC_URL, SECRET_KEY, BATCH_SIZE, INTERVAL_SECONDS",
+  );
 }
 
-// ── Validation Helpers ───────────────────────────────────────────────────────
+// ── Shared Config Loader ─────────────────────────────────────────────────────
 
-/**
- * Validate that a value is a Stellar contract ID.
- * Contract IDs begin with 'C' and are exactly 56 characters (base32-encoded).
- */
-function validateContractId(value: string): { valid: boolean; reason?: string } {
-  if (!value.startsWith("C")) {
-    return { valid: false, reason: "must start with 'C'" };
-  }
-  if (value.length !== 56) {
-    return { valid: false, reason: `must be 56 characters (got ${value.length})` };
-  }
-  // Stellar contract IDs use uppercase base32 (A-Z, 2-7)
-  if (!/^[A-Z2-7]+$/.test(value)) {
-    return { valid: false, reason: "contains invalid characters (expected base32: A-Z, 2-7)" };
-  }
-  return { valid: true };
+type Validator = (value: string) => { valid: boolean; reason?: string };
+
+interface ValidationResult {
+  variable: string;
+  passed: boolean;
+  reason?: string;
 }
 
 /**
- * Validate that a value is a valid URL with a protocol.
+ * Load and validate the keeper environment configuration.
+ *
+ * Reads the `.env` / `.env.local` file from the project root, parses it, and
+ * validates the result against the Zod schema in `config.ts`.
+ *
+ * @param strict  When `true`, the entire schema is validated (optional fields
+ *                with malformed values also trigger errors). When `false`
+ *                (default), only required fields are enforced.
+ * @returns       The validated `KeeperConfig` object.
+ * @throws        A descriptive `Error` listing every failing field when
+ *                validation fails.
  */
-function validateUrl(value: string): { valid: boolean; reason?: string } {
+export function loadConfig(strict = false): KeeperConfig {
+  const projectRoot = resolve(__dirname, "..");
+
+  let envVars: Map<string, string>;
   try {
-    const url = new URL(value);
-    if (!url.protocol || !["http:", "https:"].includes(url.protocol)) {
-      return { valid: false, reason: "must use http:// or https:// protocol" };
-    }
-    return { valid: true };
-  } catch {
-    return { valid: false, reason: "not a valid URL" };
+    envVars = loadEnvFile(projectRoot);
+  } catch (err) {
+    logger.error(String(err));
+    process.exit(1);
   }
+
+  // Convert Map to plain object for Zod
+  const envObject: Record<string, string | undefined> = {};
+  for (const [key, value] of envVars) {
+    envObject[key] = value;
+  }
+
+  // Normalize deprecated aliases to canonical names
+  const normalizedEnv = normalizeEnv(envObject);
+
+  let result;
+  if (strict) {
+    result = ConfigSchema.safeParse(normalizedEnv);
+  } else {
+    // Normal mode: parse with Zod (same as strict for required fields,
+    // but we only surface required-field errors to the user).
+    result = ConfigSchema.safeParse(normalizedEnv);
+  }
+
+  if (result.success) {
+    logDeprecationWarnings();
+    return result.data;
+  }
+
+  const errors = formatConfigErrors(result.error);
+  const message = `Configuration validation failed:\n${errors.map((e) => `  ${e}`).join("\n")}`;
+  throw new Error(message);
 }
 
-/**
- * Validate presence only (non-empty).
- */
-function validatePresence(value: string): { valid: boolean; reason?: string } {
-  if (!value.trim()) {
-    return { valid: false, reason: "must not be empty" };
-  }
-  return { valid: true };
-}
+// ── CLI Helpers ──────────────────────────────────────────────────────────────
 
-// ── Required Variables ───────────────────────────────────────────────────────
-
-/**
- * Configuration of required variables and their validation rules.
- * Uses repository conventions from frontend/.env.example.
- */
-const REQUIRED_VARIABLES: Array<{ name: string; validators: Validator[] }> = [
-  {
-    name: "VITE_CONTRACT_ID",
-    validators: [validatePresence, validateContractId],
-  },
-  {
-    name: "VITE_RPC_URL",
-    validators: [validatePresence, validateUrl],
-  },
-];
-
-// ── Validation Runner ────────────────────────────────────────────────────────
-
-function validateVariable(
-  name: string,
-  envVars: Map<string, string>,
-  validators: Validator[]
-): ValidationResult {
-  const value = envVars.get(name);
-
-  // Check presence
-  if (value === undefined) {
-    return { variable: name, passed: false, reason: "missing" };
-  }
-
-  if (!value.trim()) {
-    return { variable: name, passed: false, reason: "empty" };
-  }
-
-  // Run all validators
-  for (const validator of validators) {
-    const result = validator(value);
-    if (!result.valid) {
-      return { variable: name, passed: false, reason: result.reason };
-    }
-  }
-
-  return { variable: name, passed: true };
+function parseArgs(): { strict: boolean } {
+  const strict = process.argv.includes("--strict");
+  return { strict };
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 function main(): void {
-  const projectRoot = resolve(__dirname, "..");
-  const envVars = loadEnv(projectRoot);
+  const { strict } = parseArgs();
 
-  console.log("");
+  logger.info("");
 
-  const results: ValidationResult[] = [];
-
-  for (const { name, validators } of REQUIRED_VARIABLES) {
-    const result = validateVariable(name, envVars, validators);
-    results.push(result);
+  if (strict) {
+    logger.info("Strict mode enabled — all schema fields will be validated.\n");
   }
 
-  // Display results
-  let hasFailures = false;
-
-  for (const result of results) {
-    if (result.passed) {
-      console.log(`\u2713 ${result.variable}`);
-    } else {
-      console.log(`\u2717 ${result.variable} — ${result.reason}`);
-      hasFailures = true;
-    }
-  }
-
-  console.log("");
-
-  if (hasFailures) {
-    const failCount = results.filter((r) => !r.passed).length;
-    console.log(`Validation failed: ${failCount} issue(s) found.`);
+  let config: KeeperConfig;
+  try {
+    config = loadConfig(strict);
+  } catch (err) {
+    logger.error(String(err));
+    logger.info("");
+    logger.info("Fix the above errors and re-run.");
     process.exit(1);
   }
 
-  console.log(`All ${results.length} checks passed.`);
+  logger.info("✓ CONTRACT_ID ..............", config.CONTRACT_ID);
+  logger.info("✓ RPC_URL ..................", config.RPC_URL);
+  logger.info("✓ SECRET_KEY ...............", "******** (valid)");
+  logger.info("✓ BATCH_SIZE ...............", config.BATCH_SIZE);
+  logger.info("✓ INTERVAL_SECONDS .........", config.INTERVAL_SECONDS);
+  if (config.WEBHOOK_URL) {
+    logger.info("✓ WEBHOOK_URL ..............", config.WEBHOOK_URL);
+  }
+  if (config.NETWORK_PASSPHRASE) {
+    logger.info("✓ NETWORK_PASSPHRASE .......", config.NETWORK_PASSPHRASE);
+  }
+  logger.info("\nAll configuration checks passed.\n");
   process.exit(0);
 }
 

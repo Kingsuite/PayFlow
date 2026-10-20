@@ -11,12 +11,14 @@ import {
   BASE_FEE,
   nativeToScVal,
   Address,
+  Account,
   xdr,
 } from "@stellar/stellar-sdk";
 import { Server, assembleTransaction } from "@stellar/stellar-sdk/rpc";
 import type { Subscription, ChargeEvent, SubscriptionValidationReport } from "./types";
 import { ScValDecoder } from "./services/scval";
 import { dedupedCall } from "./services/rpcCache";
+import { readCustomRpcUrl } from "./constants";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -33,10 +35,39 @@ export const DEFAULT_TOKEN =
 
 export const server = new Server(RPC_URL);
 
+/**
+ * Returns a Server instance pointing at the active RPC URL.
+ * If the user has saved a custom RPC URL in localStorage it takes precedence;
+ * otherwise the build-time VITE_RPC_URL (or its fallback) is used.
+ *
+ * Every call creates a new Server instance so callers always get the latest URL.
+ * For high-frequency work (polling hooks) the module-level `server` singleton is
+ * still appropriate, but one-off transaction calls should prefer getServer().
+ */
+export function getServer(): Server {
+  const customUrl = typeof localStorage !== "undefined" ? readCustomRpcUrl() : null;
+  if (customUrl) return new Server(customUrl);
+  return server;
+}
+
+// Horizon REST base URL for the active network.
+// Mainnet ("Public Global Stellar Network ; September 2015") uses the public
+// Horizon cluster; everything else falls back to the testnet cluster.
+export function horizonBaseUrl(passphrase: string = NETWORK_PASSPHRASE): string {
+  return passphrase === Networks.PUBLIC
+    ? "https://horizon.stellar.org"
+    : "https://horizon-testnet.stellar.org";
+}
+
+// Stellar.expert explorer base URL for the active network.
+export function explorerBaseUrl(passphrase: string = NETWORK_PASSPHRASE): string {
+  const network = passphrase === Networks.PUBLIC ? "public" : "testnet";
+  return `https://stellar.expert/explorer/${network}`;
+}
+
 // Stellar.expert explorer link for a transaction, on the active network.
-export function explorerTxUrl(hash: string): string {
-  const network = NETWORK_PASSPHRASE === Networks.PUBLIC ? "public" : "testnet";
-  return `https://stellar.expert/explorer/${network}/tx/${hash}`;
+export function explorerTxUrl(hash: string, passphrase: string = NETWORK_PASSPHRASE): string {
+  return `${explorerBaseUrl(passphrase)}/tx/${hash}`;
 }
 
 export interface MerchantSubscriber {
@@ -58,6 +89,13 @@ export interface ContractEvent {
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
+/** Practical C-prefixed Stellar contract ID shape check */
+export function isValidContractIdShape(id: string): boolean {
+  return (
+    typeof id === "string" && id.startsWith("C") && id.length === 56 && /^[A-Z0-9]+$/i.test(id)
+  );
+}
+
 /** Convert a Stellar public key string to an ScVal Address */
 function addressVal(addr: string): xdr.ScVal {
   return nativeToScVal(Address.fromString(addr), { type: "address" });
@@ -69,7 +107,29 @@ async function buildTx(
   method: string,
   args: xdr.ScVal[]
 ): Promise<string> {
-  const account = await server.getAccount(sourcePublicKey);
+  if (!CONTRACT_ID) {
+    throw new Error("VITE_CONTRACT_ID environment variable is not set");
+  }
+
+  if (!isValidContractIdShape(CONTRACT_ID)) {
+    throw new Error("VITE_CONTRACT_ID is not a valid Soroban contract address");
+  }
+
+  if (typeof window !== "undefined" && window.freighter) {
+    try {
+      const { networkPassphrase } = await window.freighter.getNetwork();
+      if (networkPassphrase !== NETWORK_PASSPHRASE) {
+        throw new Error(
+          "Wallet network passphrase mismatch with configured VITE_NETWORK_PASSPHRASE"
+        );
+      }
+    } catch {
+      // Older Freighter or getNetwork failure
+    }
+  }
+
+  const s = getServer();
+  const account = await s.getAccount(sourcePublicKey);
   const contract = new Contract(CONTRACT_ID);
 
   const tx = new TransactionBuilder(account, {
@@ -80,7 +140,7 @@ async function buildTx(
     .setTimeout(30)
     .build();
 
-  const simResult = await server.simulateTransaction(tx);
+  const simResult = await s.simulateTransaction(tx);
   if ("error" in simResult) throw new Error(simResult.error);
 
   const assembled = assembleTransaction(tx, simResult) as unknown as { toXDR(): string };
@@ -118,12 +178,45 @@ export async function buildPayPerUseTx(user: string, amount: bigint): Promise<st
   return buildTx(user, "pay_per_use", [addressVal(user), nativeToScVal(amount, { type: "i128" })]);
 }
 
+/**
+ * Builds a `pay_per_use_to` transaction that routes a one-shot payment to an
+ * alternate `recipient` instead of the subscription's merchant. The contract
+ * re-validates the merchant whitelist for the explicit recipient (panics with
+ * `MerchantNotWhitelisted` when the whitelist is enabled and the recipient is
+ * not listed), so callers should surface that error clearly on failure.
+ */
+export async function buildPayPerUseToTx(
+  user: string,
+  amount: bigint,
+  recipient: string
+): Promise<string> {
+  return buildTx(user, "pay_per_use_to", [
+    addressVal(user),
+    nativeToScVal(amount, { type: "i128" }),
+    addressVal(recipient),
+  ]);
+}
+
 export async function buildPauseTx(user: string): Promise<string> {
   return buildTx(user, "pause", [addressVal(user)]);
 }
 
+/**
+ * Builds a `pause_until` transaction that pauses the subscription up to a
+ * specific Unix timestamp (seconds). The contract rejects (InvalidPauseExpiry)
+ * any `expiry` that is not strictly in the future, so callers should validate
+ * client-side before building the transaction to avoid a wasted round trip.
+ */
+export async function buildPauseUntilTx(user: string, expiry: bigint): Promise<string> {
+  return buildTx(user, "pause_until", [addressVal(user), nativeToScVal(expiry, { type: "u64" })]);
+}
+
 export async function buildResumeTx(user: string): Promise<string> {
   return buildTx(user, "resume", [addressVal(user)]);
+}
+
+export async function buildTransferSubscriptionTx(user: string, newUser: string): Promise<string> {
+  return buildTx(user, "transfer_subscription", [addressVal(user), addressVal(newUser)]);
 }
 
 export async function buildSetDailyLimitTx(user: string, amount: bigint): Promise<string> {
@@ -155,7 +248,8 @@ export async function simulateBatchCharge(
 ): Promise<BatchChargeOutcome[]> {
   if (users.length === 0) return [];
 
-  const account = await server.getAccount(merchantWallet);
+  const s = getServer();
+  const account = await s.getAccount(merchantWallet);
   const contract = new Contract(CONTRACT_ID);
 
   const tx = new TransactionBuilder(account, {
@@ -169,7 +263,7 @@ export async function simulateBatchCharge(
     .setTimeout(30)
     .build();
 
-  const simResult = await server.simulateTransaction(tx);
+  const simResult = await s.simulateTransaction(tx);
   if ("error" in simResult) throw new Error(simResult.error);
 
   // Best-effort decode of return Vec<ChargeResult>
@@ -204,10 +298,43 @@ export async function simulateBatchCharge(
   }
 }
 
+/**
+ * Returns the trial end timestamp (Unix seconds) for a user's subscription,
+ * or null if no trial is active (contract returns None).
+ *
+ * The contract encodes the trial end directly in `last_charged` — it returns
+ * `Some(last_charged)` when `last_charged > now`, and `None` once the trial
+ * has expired.
+ */
+export function getTrialEnd(user: string): Promise<bigint | null> {
+  return dedupedCall(`getTrialEnd:${user}`, async () => {
+    const s = getServer();
+    const contract = new Contract(CONTRACT_ID);
+    const account = await s.getAccount(user);
+
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: NETWORK_PASSPHRASE,
+    })
+      .addOperation(contract.call("get_trial_end", addressVal(user)))
+      .setTimeout(30)
+      .build();
+
+    const result = await s.simulateTransaction(tx);
+    if ("error" in result) throw new Error((result as { error: string }).error);
+
+    const retval = (result as { result?: { retval?: xdr.ScVal } }).result?.retval;
+    if (!retval) return null;
+
+    return ScValDecoder.decodeOption(retval, ScValDecoder.decodeU64);
+  });
+}
+
 export function getDailyLimit(user: string): Promise<bigint | null> {
   return dedupedCall(`getDailyLimit:${user}`, async () => {
+    const s = getServer();
     const contract = new Contract(CONTRACT_ID);
-    const account = await server.getAccount(user);
+    const account = await s.getAccount(user);
 
     const tx = new TransactionBuilder(account, {
       fee: BASE_FEE,
@@ -217,7 +344,7 @@ export function getDailyLimit(user: string): Promise<bigint | null> {
       .setTimeout(30)
       .build();
 
-    const result = await server.simulateTransaction(tx);
+    const result = await s.simulateTransaction(tx);
     if ("error" in result) throw new Error((result as { error: string }).error);
 
     const retval = (result as { result?: { retval?: xdr.ScVal } }).result?.retval;
@@ -229,8 +356,9 @@ export function getDailyLimit(user: string): Promise<bigint | null> {
 
 export function getDailySpent(user: string): Promise<bigint> {
   return dedupedCall(`getDailySpent:${user}`, async () => {
+    const s = getServer();
     const contract = new Contract(CONTRACT_ID);
-    const account = await server.getAccount(user);
+    const account = await s.getAccount(user);
 
     const tx = new TransactionBuilder(account, {
       fee: BASE_FEE,
@@ -240,7 +368,7 @@ export function getDailySpent(user: string): Promise<bigint> {
       .setTimeout(30)
       .build();
 
-    const result = await server.simulateTransaction(tx);
+    const result = await s.simulateTransaction(tx);
     if ("error" in result) throw new Error((result as { error: string }).error);
 
     const retval = (result as { result?: { retval?: xdr.ScVal } }).result?.retval;
@@ -254,6 +382,63 @@ export function getDailySpent(user: string): Promise<bigint> {
   });
 }
 
+export function getDayStart(user: string): Promise<bigint | null> {
+  return dedupedCall(`getDayStart:${user}`, async () => {
+    const contract = new Contract(CONTRACT_ID);
+    const account = await server.getAccount(user);
+
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: NETWORK_PASSPHRASE,
+    })
+      .addOperation(contract.call("get_day_start", addressVal(user)))
+      .setTimeout(30)
+      .build();
+
+    const result = await server.simulateTransaction(tx);
+    if ("error" in result) throw new Error((result as { error: string }).error);
+
+    const retval = (result as { result?: { retval?: xdr.ScVal } }).result?.retval;
+    if (!retval || retval.switch().name === "scvVoid") return null;
+
+    // Contract returns Option<u64> (timestamp of window start). Some deployments may return bool.
+    const type = retval.switch().name;
+    if (type === "scvBool") {
+      return retval.b() ? 1n : null;
+    }
+    try {
+      const decoded = ScValDecoder.decodeOption(retval, ScValDecoder.decodeU64);
+      return decoded;
+    } catch {
+      // Fallback: try direct u64
+      try {
+        return ScValDecoder.decodeU64(retval);
+      } catch {
+        return null;
+      }
+    }
+  });
+}
+
+export interface DailyLimitStatus {
+  limit: bigint | null;
+  spent: bigint;
+  remaining: bigint | null;
+  dayActive: boolean;
+  dayStart: bigint | null;
+}
+
+export async function getDailyLimitStatus(user: string): Promise<DailyLimitStatus> {
+  const [limit, spent, dayStart] = await Promise.all([
+    getDailyLimit(user),
+    getDailySpent(user),
+    getDayStart(user),
+  ]);
+  const dayActive = dayStart !== null;
+  const remaining = limit !== null ? (limit > spent ? limit - spent : 0n) : null;
+  return { limit, spent, remaining, dayActive, dayStart };
+}
+
 export async function buildApproveTx(
   user: string,
   tokenId: string,
@@ -261,7 +446,8 @@ export async function buildApproveTx(
   amount: bigint
 ): Promise<string> {
   const tokenContract = new Contract(tokenId);
-  const account = await server.getAccount(user);
+  const s = getServer();
+  const account = await s.getAccount(user);
 
   const tx = new TransactionBuilder(account, {
     fee: BASE_FEE,
@@ -279,7 +465,7 @@ export async function buildApproveTx(
     .setTimeout(30)
     .build();
 
-  const simResult = await server.simulateTransaction(tx);
+  const simResult = await s.simulateTransaction(tx);
   if ("error" in simResult) throw new Error(simResult.error);
 
   const assembled = assembleTransaction(tx, simResult) as unknown as { toXDR(): string };
@@ -288,8 +474,9 @@ export async function buildApproveTx(
 
 export function getSubscription(user: string): Promise<Subscription | null> {
   return dedupedCall(`getSubscription:${user}`, async () => {
+    const s = getServer();
     const contract = new Contract(CONTRACT_ID);
-    const account = await server.getAccount(user);
+    const account = await s.getAccount(user);
 
     const tx = new TransactionBuilder(account, {
       fee: BASE_FEE,
@@ -299,7 +486,7 @@ export function getSubscription(user: string): Promise<Subscription | null> {
       .setTimeout(30)
       .build();
 
-    const result = await server.simulateTransaction(tx);
+    const result = await s.simulateTransaction(tx);
     if ("error" in result) throw new Error((result as { error: string }).error);
 
     const retval = (result as { result?: { retval?: xdr.ScVal } }).result?.retval;
@@ -335,8 +522,9 @@ export function getSubscription(user: string): Promise<Subscription | null> {
 
 export async function getSubscriptionMetadata(user: string): Promise<string | null> {
   try {
+    const s = getServer();
     const contract = new Contract(CONTRACT_ID);
-    const account = await server.getAccount(user);
+    const account = await s.getAccount(user);
 
     const tx = new TransactionBuilder(account, {
       fee: BASE_FEE,
@@ -346,7 +534,7 @@ export async function getSubscriptionMetadata(user: string): Promise<string | nu
       .setTimeout(30)
       .build();
 
-    const result = await server.simulateTransaction(tx);
+    const result = await s.simulateTransaction(tx);
     if ("error" in result) return null;
 
     const retval = (result as { result?: { retval?: xdr.ScVal } }).result?.retval;
@@ -356,6 +544,207 @@ export async function getSubscriptionMetadata(user: string): Promise<string | nu
   } catch {
     return null;
   }
+}
+
+/** Mirrors contract `SubscriptionHealth` from `get_subscription_health`. */
+export interface SubscriptionHealth {
+  active: boolean;
+  charge_due: boolean;
+  within_grace: boolean;
+  has_sufficient_allowance: boolean;
+  is_paused: boolean;
+  trial_active: boolean;
+  daily_limit_set: boolean;
+}
+
+export const CHARGE_SIM_RESULTS = [
+  "WouldSucceed",
+  "NotDue",
+  "Inactive",
+  "InsufficientAllowance",
+  "GracePeriodElapsed",
+  "ContractPaused",
+  "SubscriptionPaused",
+] as const;
+
+export type ChargeSimResult = (typeof CHARGE_SIM_RESULTS)[number];
+
+export const CHARGE_SIM_LABELS: Record<ChargeSimResult, string> = {
+  WouldSucceed: "Next charge would succeed",
+  NotDue: "Next charge is not due yet",
+  Inactive: "No active subscription to charge",
+  InsufficientAllowance: "Allowance is too low for the next charge",
+  GracePeriodElapsed: "Grace period has elapsed — recurring charge would fail",
+  ContractPaused: "Protocol is paused",
+  SubscriptionPaused: "Subscription is paused — charge would fail",
+};
+
+export function normalizeSubscriptionHealth(
+  raw: Partial<SubscriptionHealth> | null | undefined
+): SubscriptionHealth | null {
+  if (!raw) return null;
+  return {
+    active: !!raw.active,
+    charge_due: !!raw.charge_due,
+    within_grace: !!raw.within_grace,
+    has_sufficient_allowance: !!raw.has_sufficient_allowance,
+    is_paused: !!raw.is_paused,
+    trial_active: !!raw.trial_active,
+    daily_limit_set: !!raw.daily_limit_set,
+  };
+}
+
+export function isSubscriptionHealthy(health: SubscriptionHealth): boolean {
+  return health.active && health.has_sufficient_allowance && !health.is_paused;
+}
+
+export function subscriptionHasWarnings(health: SubscriptionHealth): boolean {
+  return !isSubscriptionHealthy(health) || health.within_grace || health.charge_due;
+}
+
+/** States that would make pay-per-use fail on-chain. */
+export function subscriptionHealthBlocksPay(health: SubscriptionHealth | null): boolean {
+  if (!health) return false;
+  return !health.active || health.is_paused;
+}
+
+export function chargeSimIsRisky(result: ChargeSimResult | null): boolean {
+  return (
+    result === "InsufficientAllowance" ||
+    result === "GracePeriodElapsed" ||
+    result === "ContractPaused" ||
+    result === "SubscriptionPaused" ||
+    result === "Inactive"
+  );
+}
+
+export function chargeSimBlocksPay(result: ChargeSimResult | null): boolean {
+  return result === "ContractPaused" || result === "SubscriptionPaused" || result === "Inactive";
+}
+
+export function payBlockedReason(
+  health: SubscriptionHealth | null,
+  sim: ChargeSimResult | null
+): string | null {
+  if (health?.is_paused || sim === "SubscriptionPaused") {
+    return "Pay-per-use is unavailable while the subscription is paused. Resume first.";
+  }
+  if ((health && !health.active) || sim === "Inactive") {
+    return "Pay-per-use requires an active subscription.";
+  }
+  if (sim === "ContractPaused") {
+    return "Pay-per-use is unavailable while the protocol is paused.";
+  }
+  return null;
+}
+
+export function payWarningReason(
+  health: SubscriptionHealth | null,
+  sim: ChargeSimResult | null
+): string | null {
+  if (payBlockedReason(health, sim)) return null;
+  if ((health && !health.has_sufficient_allowance) || sim === "InsufficientAllowance") {
+    return "Token allowance is insufficient. Increase allowance before paying or the charge may fail.";
+  }
+  if (health?.within_grace) {
+    return "Subscription is in its grace period. Recurring charge is overdue.";
+  }
+  if (sim === "GracePeriodElapsed") {
+    return "Grace period has elapsed. Recurring charge would fail until the subscription is repaired.";
+  }
+  if (health?.charge_due) {
+    return "A recurring charge is currently due.";
+  }
+  return null;
+}
+
+/** Decode a unit `ChargeSimResult` enum (symbol or vec-wrapped symbol). */
+export function decodeChargeSimResult(
+  retval: xdr.ScVal | null | undefined
+): ChargeSimResult | null {
+  if (!retval) return null;
+  try {
+    const type = retval.switch().name;
+    let name: string | null = null;
+    if (type === "scvSymbol") {
+      name = retval.sym().toString();
+    } else if (type === "scvVec") {
+      const vec = retval.vec() ?? [];
+      if (vec.length > 0 && vec[0].switch().name === "scvSymbol") {
+        name = vec[0].sym().toString();
+      }
+    }
+    if (name && (CHARGE_SIM_RESULTS as readonly string[]).includes(name)) {
+      return name as ChargeSimResult;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function getSubscriptionHealth(user: string): Promise<SubscriptionHealth | null> {
+  return dedupedCall(`getSubscriptionHealth:${user}`, async () => {
+    try {
+      const s = getServer();
+      const contract = new Contract(CONTRACT_ID);
+      const account = await s.getAccount(user);
+
+      const tx = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(contract.call("get_subscription_health", addressVal(user)))
+        .setTimeout(30)
+        .build();
+
+      const result = await s.simulateTransaction(tx);
+      if ("error" in result) throw new Error((result as { error: string }).error);
+
+      const retval = (result as { result?: { retval?: xdr.ScVal } }).result?.retval;
+      if (!retval || retval.switch().name === "scvVoid") return null;
+
+      return normalizeSubscriptionHealth(
+        ScValDecoder.decodeStruct(retval, {
+          active: ScValDecoder.decodeBool,
+          charge_due: ScValDecoder.decodeBool,
+          within_grace: ScValDecoder.decodeBool,
+          has_sufficient_allowance: ScValDecoder.decodeBool,
+          is_paused: ScValDecoder.decodeBool,
+          trial_active: ScValDecoder.decodeBool,
+          daily_limit_set: ScValDecoder.decodeBool,
+        })
+      );
+    } catch {
+      return null;
+    }
+  });
+}
+
+/** Dry-run of on-chain `simulate_charge` — no storage writes or transfers. */
+export function simulateCharge(user: string): Promise<ChargeSimResult | null> {
+  return dedupedCall(`simulateCharge:${user}`, async () => {
+    try {
+      const contract = new Contract(CONTRACT_ID);
+      const account = await server.getAccount(user);
+
+      const tx = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(contract.call("simulate_charge", addressVal(user)))
+        .setTimeout(30)
+        .build();
+
+      const result = await server.simulateTransaction(tx);
+      if ("error" in result) throw new Error((result as { error: string }).error);
+
+      const retval = (result as { result?: { retval?: xdr.ScVal } }).result?.retval;
+      return decodeChargeSimResult(retval);
+    } catch {
+      return null;
+    }
+  });
 }
 
 function parseEventValueField(value: any, field: string): string {
@@ -469,8 +858,9 @@ export async function getMerchantSubscribers(merchant: string): Promise<Merchant
 
 export async function getMerchantRevenueHistory(merchant: string, days = 7): Promise<bigint[]> {
   try {
+    const s = getServer();
     const contract = new Contract(CONTRACT_ID);
-    const account = await server.getAccount(merchant);
+    const account = await s.getAccount(merchant);
 
     const tx = new TransactionBuilder(account, {
       fee: BASE_FEE,
@@ -486,7 +876,7 @@ export async function getMerchantRevenueHistory(merchant: string, days = 7): Pro
       .setTimeout(30)
       .build();
 
-    const result = await server.simulateTransaction(tx);
+    const result = await s.simulateTransaction(tx);
     if ("error" in result) return [];
 
     const retval = (result as { result?: { retval?: xdr.ScVal } }).result?.retval;
@@ -501,14 +891,74 @@ export async function getMerchantRevenueHistory(merchant: string, days = 7): Pro
 export function getMerchantRevenue(merchant: string): Promise<bigint> {
   return dedupedCall(`getMerchantRevenue:${merchant}`, async () => {
     try {
+      const s = getServer();
       const contract = new Contract(CONTRACT_ID);
-      const account = await server.getAccount(merchant);
+      const account = await s.getAccount(merchant);
 
       const tx = new TransactionBuilder(account, {
         fee: BASE_FEE,
         networkPassphrase: NETWORK_PASSPHRASE,
       })
         .addOperation(contract.call("get_merchant_revenue", addressVal(merchant)))
+        .setTimeout(30)
+        .build();
+
+      const result = await s.simulateTransaction(tx);
+      if ("error" in result) return 0n;
+
+      const retval = (result as { result?: { retval?: xdr.ScVal } }).result?.retval;
+      if (!retval) return 0n;
+
+      try {
+        return ScValDecoder.decodeI128(retval);
+      } catch {
+        return 0n;
+      }
+    } catch {
+      return 0n;
+    }
+  });
+}
+
+
+/**
+ * Fetch the XLM (or requested asset) balance for an account from Horizon.
+ *
+ * Returns "0" only when the account exists but holds no matching balance entry.
+ * Network/HTTP/JSON failures throw so callers (useStellarBalance) can surface
+ * the error instead of silently rendering $0.
+ */
+export async function getBalance(
+  publicKey: string,
+  fields?: { asset_type?: string }
+): Promise<string> {
+  // Note: Horizon /accounts/{id} endpoint does not support filtering by asset_type,
+  // so we append the query parameter but still parse client-side.
+  const query = fields?.asset_type ? `?asset_type=${fields.asset_type}` : "";
+  const resp = await fetch(`${horizonBaseUrl()}/accounts/${publicKey}${query}`);
+  if (!resp.ok) throw new Error(`Horizon API error: ${resp.status}`);
+  const data = await resp.json();
+
+  const assetType = fields?.asset_type ?? "native";
+  const nativeBalance = data.balances?.find(
+    (b: { asset_type: string; balance: string }) => b.asset_type === assetType
+  );
+  return nativeBalance?.balance ?? "0";
+}
+
+export function getTokenBalance(owner: string, tokenId: string): Promise<bigint> {
+  if (!tokenId) return Promise.reject(new Error("Token ID is required."));
+
+  return dedupedCall(`getTokenBalance:${owner}:${tokenId}`, async () => {
+    try {
+      const tokenContract = new Contract(tokenId);
+      const account = await server.getAccount(owner);
+
+      const tx = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(tokenContract.call("balance", addressVal(owner)))
         .setTimeout(30)
         .build();
 
@@ -529,35 +979,14 @@ export function getMerchantRevenue(merchant: string): Promise<bigint> {
   });
 }
 
-export async function getBalance(
-  publicKey: string,
-  fields?: { asset_type?: string }
-): Promise<string> {
-  try {
-    // Note: Horizon /accounts/{id} endpoint does not support filtering by asset_type,
-    // so we append the query parameter but still parse client-side.
-    const query = fields?.asset_type ? `?asset_type=${fields.asset_type}` : "";
-    const resp = await fetch(`https://horizon-testnet.stellar.org/accounts/${publicKey}${query}`);
-    if (!resp.ok) throw new Error(`Horizon API error: ${resp.status}`);
-    const data = await resp.json();
-
-    const assetType = fields?.asset_type ?? "native";
-    const nativeBalance = data.balances?.find(
-      (b: { asset_type: string; balance: string }) => b.asset_type === assetType
-    );
-    return nativeBalance?.balance ?? "0";
-  } catch {
-    return "0";
-  }
-}
-
 export function getAllowance(owner: string, tokenId = TOKEN_CONTRACT_ID): Promise<bigint> {
   if (!tokenId) return Promise.reject(new Error("VITE_TOKEN_CONTRACT_ID is not configured."));
 
   return dedupedCall(`getAllowance:${owner}:${tokenId}`, async () => {
     try {
+      const s = getServer();
       const tokenContract = new Contract(tokenId);
-      const account = await server.getAccount(owner);
+      const account = await s.getAccount(owner);
 
       const tx = new TransactionBuilder(account, {
         fee: BASE_FEE,
@@ -573,7 +1002,7 @@ export function getAllowance(owner: string, tokenId = TOKEN_CONTRACT_ID): Promis
         .setTimeout(30)
         .build();
 
-      const result = await server.simulateTransaction(tx);
+      const result = await s.simulateTransaction(tx);
       if ("error" in result) return 0n;
 
       const retval = (result as { result?: { retval?: xdr.ScVal } }).result?.retval;
@@ -683,6 +1112,50 @@ export async function getChargeHistory(user: string): Promise<ChargeEvent[]> {
   }
 }
 
+// ── Contract pause state ─────────────────────────────────────────────────────
+
+/**
+ * Returns true if the contract is currently paused, false if not.
+ * Returns null if the RPC call fails — callers must treat null as "unknown"
+ * and must NOT show the pause banner when the result is uncertain.
+ *
+ * Uses a static read-only simulation source; no wallet connection required.
+ */
+export async function getContractPaused(): Promise<boolean | null> {
+  if (!CONTRACT_ID) return null;
+
+  try {
+    // Soroban simulates read-only calls without requiring a funded source account.
+    // We supply a static source; the node ignores sequence/balance for pure
+    // view-function simulations.
+    const source = new Account(
+      // Well-known Stellar "zero" address — safe to use as a sim-only source.
+      "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
+      "0"
+    );
+
+    const s = getServer();
+    const contract = new Contract(CONTRACT_ID);
+    const tx = new TransactionBuilder(source, {
+      fee: BASE_FEE,
+      networkPassphrase: NETWORK_PASSPHRASE,
+    })
+      .addOperation(contract.call("is_contract_paused"))
+      .setTimeout(30)
+      .build();
+
+    const result = await s.simulateTransaction(tx);
+    if ("error" in result) return null;
+
+    const retval = (result as { result?: { retval?: xdr.ScVal } }).result?.retval;
+    if (!retval || retval.switch().name === "scvVoid") return null;
+
+    return retval.b?.() ?? false;
+  } catch {
+    return null;
+  }
+}
+
 // ── Admin diagnostics ───────────────────────────────────────────────────────
 
 export interface ContractHealthReport {
@@ -705,7 +1178,7 @@ export async function getContractHealth(caller: string): Promise<ContractHealthR
   };
 
   try {
-    await server.getHealth();
+    await getServer().getHealth();
     report.rpcReachable = true;
   } catch {
     return report;
@@ -715,7 +1188,8 @@ export async function getContractHealth(caller: string): Promise<ContractHealthR
 
   async function simCall(method: string, args: xdr.ScVal[] = []): Promise<xdr.ScVal | null> {
     try {
-      const account = await server.getAccount(caller);
+      const s = getServer();
+      const account = await s.getAccount(caller);
       const tx = new TransactionBuilder(account, {
         fee: BASE_FEE,
         networkPassphrase: NETWORK_PASSPHRASE,
@@ -723,7 +1197,7 @@ export async function getContractHealth(caller: string): Promise<ContractHealthR
         .addOperation(contract.call(method, ...args))
         .setTimeout(30)
         .build();
-      const result = await server.simulateTransaction(tx);
+      const result = await s.simulateTransaction(tx);
       if ("error" in result) return null;
       return (result as { result?: { retval?: xdr.ScVal } }).result?.retval ?? null;
     } catch {
@@ -749,6 +1223,82 @@ export async function getContractHealth(caller: string): Promise<ContractHealthR
   }
 
   return report;
+}
+
+// ── Protocol stats / health check (read-only, mirrors contract types) ───────
+
+/** Mirrors contract `ProtocolStats` from `get_protocol_stats`. */
+export interface ProtocolStats {
+  activeCount: bigint;
+  feeBps: number;
+  feeCollector: string | null;
+  gracePeriod: bigint;
+  whitelistEnabled: boolean;
+  schemaVersion: number;
+  contractPaused: boolean;
+}
+
+/** Mirrors contract `HealthReport` from `contract_health_check`. */
+export interface ContractHealthCheckReport {
+  isHealthy: boolean;
+  contractPaused: boolean;
+  tokenConfigured: boolean;
+  adminConfigured: boolean;
+  instanceTtlLedgers: number;
+  activeSubscriptionCount: bigint;
+  schemaVersion: number;
+  feeCollectorSet: boolean;
+  globalVolumeUtilizationPct: number;
+  pendingMerchantRevCount: number;
+}
+
+const decodeU32 = (v: xdr.ScVal): number => Number(v.u32());
+
+/** Reads aggregate protocol stats (active count, fee, grace, pause, schema version). */
+export function getProtocolStats(caller: string): Promise<ProtocolStats | null> {
+  return dedupedCall(`getProtocolStats:${caller}`, async () => {
+    try {
+      const retval = await simulateContractRead(caller, "get_protocol_stats", []);
+      if (!retval || retval.switch().name === "scvVoid") return null;
+
+      return ScValDecoder.decodeStruct<ProtocolStats>(retval, {
+        activeCount: (v) => ScValDecoder.decodeU64(v),
+        feeBps: decodeU32,
+        feeCollector: (v) => ScValDecoder.decodeOption(v, ScValDecoder.decodeAddress),
+        gracePeriod: (v) => ScValDecoder.decodeU64(v),
+        whitelistEnabled: ScValDecoder.decodeBool,
+        schemaVersion: decodeU32,
+        contractPaused: ScValDecoder.decodeBool,
+      });
+    } catch {
+      return null;
+    }
+  });
+}
+
+/** Runs the contract's own `contract_health_check` read-only diagnostic. */
+export function getContractHealthCheck(caller: string): Promise<ContractHealthCheckReport | null> {
+  return dedupedCall(`getContractHealthCheck:${caller}`, async () => {
+    try {
+      const retval = await simulateContractRead(caller, "contract_health_check", []);
+      if (!retval || retval.switch().name === "scvVoid") return null;
+
+      return ScValDecoder.decodeStruct<ContractHealthCheckReport>(retval, {
+        isHealthy: ScValDecoder.decodeBool,
+        contractPaused: ScValDecoder.decodeBool,
+        tokenConfigured: ScValDecoder.decodeBool,
+        adminConfigured: ScValDecoder.decodeBool,
+        instanceTtlLedgers: decodeU32,
+        activeSubscriptionCount: (v) => ScValDecoder.decodeU64(v),
+        schemaVersion: decodeU32,
+        feeCollectorSet: ScValDecoder.decodeBool,
+        globalVolumeUtilizationPct: decodeU32,
+        pendingMerchantRevCount: decodeU32,
+      });
+    } catch {
+      return null;
+    }
+  });
 }
 
 const VALIDATION_TIMEOUT_MS = 30_000;
@@ -821,7 +1371,8 @@ async function simulateContractRead(
   args: xdr.ScVal[],
   timeoutMs = VALIDATION_TIMEOUT_MS
 ): Promise<xdr.ScVal | null> {
-  const account = await server.getAccount(sourcePublicKey);
+  const s = getServer();
+  const account = await s.getAccount(sourcePublicKey);
   const contract = new Contract(CONTRACT_ID);
 
   const tx = new TransactionBuilder(account, {
@@ -832,7 +1383,7 @@ async function simulateContractRead(
     .setTimeout(30)
     .build();
 
-  const simPromise = server.simulateTransaction(tx);
+  const simPromise = s.simulateTransaction(tx);
   const timeoutPromise = new Promise<never>((_, reject) => {
     setTimeout(() => reject(new Error("Validation request timed out")), timeoutMs);
   });
@@ -917,7 +1468,8 @@ function parseFixedInconsistenciesFromEventValue(value: unknown): number | null 
 /** Extracts the fixed inconsistency count from a `subscription_repaired` contract event. */
 export async function parseSubscriptionRepairedEvent(txHash: string): Promise<number | null> {
   try {
-    const tx = await server.getTransaction(txHash);
+    const s = getServer();
+    const tx = await s.getTransaction(txHash);
     if (tx.status !== "SUCCESS") return null;
 
     const events = (tx as { events?: Array<{ topic?: unknown[]; value?: unknown }> }).events ?? [];
@@ -933,7 +1485,7 @@ export async function parseSubscriptionRepairedEvent(txHash: string): Promise<nu
     }
 
     // Fallback: scan recent contract events tied to this transaction hash.
-    const response = await server.getEvents({
+    const response = await s.getEvents({
       startLedger: undefined,
       filters: [{ type: "contract", contractIds: [CONTRACT_ID] }],
       limit: 50,
@@ -954,4 +1506,210 @@ export async function parseSubscriptionRepairedEvent(txHash: string): Promise<nu
   } catch {
     return null;
   }
+}
+
+// ── Admin Batch Operations ────────────────────────────────────────────────────
+
+/**
+ * Builds an XDR transaction for `batch_pause_subscriptions`.
+ * Admin-only. Contract limit: 25 addresses per call.
+ */
+export async function buildBatchPauseSubscriptionsTx(
+  adminPublicKey: string,
+  users: string[]
+): Promise<string> {
+  return buildTx(adminPublicKey, "batch_pause_subscriptions", [
+    nativeToScVal(
+      users.map((u) => Address.fromString(u)),
+      { type: "vec" }
+    ),
+  ]);
+}
+
+/**
+ * Builds an XDR transaction for `whitelist_batch_add`.
+ * Admin-only. Contract limit: 50 addresses per call.
+ */
+export async function buildWhitelistBatchAddTx(
+  adminPublicKey: string,
+  merchants: string[]
+): Promise<string> {
+  return buildTx(adminPublicKey, "whitelist_batch_add", [
+    nativeToScVal(
+      merchants.map((m) => Address.fromString(m)),
+      { type: "vec" }
+    ),
+  ]);
+}
+
+/**
+ * Builds an XDR transaction for `whitelist_batch_remove`.
+ * Admin-only. Contract limit: 50 addresses per call.
+ */
+export async function buildWhitelistBatchRemoveTx(
+  adminPublicKey: string,
+  merchants: string[]
+): Promise<string> {
+  return buildTx(adminPublicKey, "whitelist_batch_remove", [
+    nativeToScVal(
+      merchants.map((m) => Address.fromString(m)),
+      { type: "vec" }
+    ),
+  ]);
+}
+// ── TTL / Archived-state helpers ──────────────────────────────────────────────
+
+/**
+ * Soroban RPC error codes and message patterns that indicate a contract entry
+ * has been archived by the network's state-expiry mechanism.
+ *
+ * The canonical indicator is error code -32700 ("entryExpired") or the string
+ * "archived" appearing in the RPC error message.  Both are treated identically
+ * from the UI's perspective: the user must call `extend_subscription_ttl`.
+ */
+const ARCHIVED_ERROR_PATTERNS = [
+  /entryexpired/i,
+  /entry.*expired/i,
+  /archived/i,
+  /ttl.*expired/i,
+  /state.*expir/i,
+  /-32700/,
+] as const;
+
+/**
+ * Returns true when an error message or object originates from a Soroban RPC
+ * "entry archived / TTL expired" condition.
+ */
+export function isArchivedError(err: unknown): boolean {
+  const msg =
+    err instanceof Error ? err.message : typeof err === "string" ? err : JSON.stringify(err ?? "");
+
+  return ARCHIVED_ERROR_PATTERNS.some((pattern) => pattern.test(msg));
+}
+
+/**
+ * Builds a transaction that calls `extend_subscription_ttl(subscriber)` on the
+ * contract.  The transaction can be signed by anyone — no admin auth is needed.
+ *
+ * @param callerPublicKey - The Stellar public key used to build/fund the tx (can be the user themselves)
+ * @param subscriberAddress - The subscriber whose persistent storage entry should be extended
+ * @returns XDR-encoded transaction ready for signing
+ */
+export async function buildExtendSubscriptionTtlTx(
+  callerPublicKey: string,
+  subscriberAddress: string
+): Promise<string> {
+  return buildTx(callerPublicKey, "extend_subscription_ttl", [addressVal(subscriberAddress)]);
+}
+
+/**
+ * Estimates the fee (in stroops) for an `extend_subscription_ttl` call by
+ * running a simulation and reading back the min-resource-fee.
+ *
+ * Returns `null` when the simulation cannot be completed (e.g. RPC unavailable).
+ */
+export async function estimateExtendTtlFee(
+  callerPublicKey: string,
+  subscriberAddress: string
+): Promise<bigint | null> {
+  try {
+    const s = getServer();
+    const account = await s.getAccount(callerPublicKey);
+    const contract = new Contract(CONTRACT_ID);
+
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: NETWORK_PASSPHRASE,
+    })
+      .addOperation(contract.call("extend_subscription_ttl", addressVal(subscriberAddress)))
+      .setTimeout(30)
+      .build();
+
+    const simResult = await s.simulateTransaction(tx);
+    if ("error" in simResult) return null;
+
+    // The minResourceFee field is returned as a string by the RPC
+    const minFee = (simResult as { minResourceFee?: string }).minResourceFee;
+    if (minFee) return BigInt(minFee);
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function getSubscriptionToken(user: string): Promise<string | null> {
+  return dedupedCall(`getSubscriptionToken:${user}`, async () => {
+    try {
+      const contract = new Contract(CONTRACT_ID);
+      const account = await server.getAccount(user);
+      const tx = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(contract.call("get_subscription", addressVal(user)))
+        .setTimeout(30)
+        .build();
+
+      const result = await server.simulateTransaction(tx);
+      if ("error" in result) return null;
+      const retval = (result as { result?: { retval?: xdr.ScVal } }).result?.retval;
+      if (!retval || retval.switch().name === "scvVoid") return null;
+
+      const decoded = ScValDecoder.decodeStruct(retval, {
+        token: ScValDecoder.decodeAddress,
+      });
+      return decoded.token;
+    } catch {
+      return null;
+    }
+  });
+}
+
+export function getReferral(user: string): Promise<string | null> {
+  return dedupedCall(`getReferral:${user}`, async () => {
+    try {
+      const contract = new Contract(CONTRACT_ID);
+      const account = await server.getAccount(user);
+      const tx = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(contract.call("get_referral", addressVal(user)))
+        .setTimeout(30)
+        .build();
+
+      const result = await server.simulateTransaction(tx);
+      if ("error" in result) return null;
+      const retval = (result as { result?: { retval?: xdr.ScVal } }).result?.retval;
+      if (!retval || retval.switch().name === "scvVoid") return null;
+      return ScValDecoder.decodeAddress(retval);
+    } catch {
+      return null;
+    }
+  });
+}
+
+export function getReferrer(user: string): Promise<string | null> {
+  return dedupedCall(`getReferrer:${user}`, async () => {
+    try {
+      const contract = new Contract(CONTRACT_ID);
+      const account = await server.getAccount(user);
+      const tx = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(contract.call("get_referrer", addressVal(user)))
+        .setTimeout(30)
+        .build();
+
+      const result = await server.simulateTransaction(tx);
+      if ("error" in result) return null;
+      const retval = (result as { result?: { retval?: xdr.ScVal } }).result?.retval;
+      if (!retval || retval.switch().name === "scvVoid") return null;
+      return ScValDecoder.decodeAddress(retval);
+    } catch {
+      return null;
+    }
+  });
 }

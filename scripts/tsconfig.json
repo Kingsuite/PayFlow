@@ -1,17 +1,21 @@
 {
   "compilerOptions": {
-    "target": "ES2020",
+    "target": "ES2022",
     "module": "ESNext",
-    "lib": ["ES2020"],
     "moduleResolution": "bundler",
-    "esModuleInterop": true,
-    "allowSyntheticDefaultImports": true,
-    "resolveJsonModule": true,
+    "lib": ["ES2022"],
     "strict": true,
+    "esModuleInterop": true,
     "skipLibCheck": true,
-    "noEmit": true,
-    "types": ["node"],
-    "typeRoots": ["./node_modules/@types"]
+    "outDir": "dist",
+    "rootDir": ".",
+    "resolveJsonModule": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "types": ["vitest/globals", "node"]
   },
   "include": ["*.ts", "utils/*.ts", "lib/*.ts"]
+  "include": ["./**/*.ts"],
+  "exclude": ["dist", "node_modules"]
 }

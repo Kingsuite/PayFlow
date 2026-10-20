@@ -2,6 +2,10 @@ import { useState, useCallback, useRef, useEffect } from "react";
 import { StrKey } from "@stellar/stellar-sdk";
 import { server } from "../stellar";
 import { CONTRACT_LIMITS } from "../constants";
+import {
+  validateStroopAmount as validateStroopAmountCore,
+  type StroopValidationResult,
+} from "../utils/validation";
 
 export interface ValidationResult {
   valid: boolean;
@@ -12,45 +16,57 @@ export interface FormFields {
   merchant: string;
   amount: string;
   interval: number;
+  tokenAddress: string;
 }
 
 export interface FormErrors {
   merchant?: string;
   amount?: string;
   interval?: string;
+  tokenAddress?: string;
 }
 
 interface UseFormValidationResult {
   errors: FormErrors;
   validate: (fields: FormFields) => boolean;
   isValid: boolean;
+  /** True while the async server check (`server.getAccount`) is in flight. */
+  isValidating: boolean;
+  /** @deprecated Alias of `isValidating`. */
   validating: boolean;
   validateAsync: (fields: FormFields) => Promise<boolean>;
+  /** Aborts any in-flight async check and clears `isValidating`. */
+  cancelValidation: () => void;
 }
+
+const ACCOUNT_NOT_FOUND_ERROR = "Account not found on network.";
 
 /**
  * validateStroopAmount - Validates a subscription amount entered as a decimal string.
  *
- * Converts the human amount to stroops (7 decimal places) and checks it:
- * - is a valid number
- * - is > 0
- * - does not exceed the protocol maximum.
+ * Delegates to the canonical validateStroopAmount in utils/validation.ts and
+ * converts to the ValidationResult shape expected by this hook's callers.
  *
- * @param value - Amount as a decimal string (e.g., "12.34")
+ * The `unit` parameter defaults to "XLM" for backward-compatibility with
+ * existing callers (e.g. StroopInput.test.tsx, useFormValidation.test.ts)
+ * that pass an XLM string and a maxStroops bigint without a unit argument.
+ *
+ * @param value - Amount as a decimal string (e.g., "12.34") in XLM units by default
  * @param maxStroops - Maximum allowed amount in stroops
  * @returns {ValidationResult} Validation outcome
  */
-export function validateStroopAmount(value: string, maxStroops: bigint): ValidationResult {
-  const num = parseFloat(value);
-  if (!value || isNaN(num) || num <= 0) {
+export function validateStroopAmount(
+  value: string,
+  maxStroops: bigint
+): ValidationResult {
+  const result: StroopValidationResult = validateStroopAmountCore(value, "XLM", maxStroops);
+  if (result.error !== null) {
+    return { valid: false, error: result.error };
+  }
+  if (result.stroops === null) {
+    // Empty input: treat as invalid for form context
     return { valid: false, error: "Amount must be greater than 0." };
   }
-
-  const stroops = BigInt(Math.round(num * 10_000_000));
-  if (stroops > maxStroops) {
-    return { valid: false, error: `Amount exceeds maximum of ${maxStroops} stroops.` };
-  }
-
   return { valid: true };
 }
 
@@ -87,8 +103,8 @@ export function validateAddress(addr: string): ValidationResult {
     return { valid: false, error: "Address is required." };
   }
 
-  if (!StrKey.isValidEd25519PublicKey(addr)) {
-    return { valid: false, error: "Invalid Stellar address." };
+  if (!StrKey.isValidEd25519PublicKey(addr) && !StrKey.isValidContract(addr)) {
+    return { valid: false, error: "Invalid Stellar address or contract ID." };
   }
 
   return { valid: true };
@@ -114,21 +130,24 @@ export function validateAddress(addr: string): ValidationResult {
  * @returns {FormErrors} returns.errors - Field-level error messages
  * @returns {(fields: FormFields) => boolean} returns.validate - Synchronously validate and populate `errors`
  * @returns {boolean} returns.isValid - True when there are no validation errors
- * @returns {boolean} returns.validating - True while `validateAsync` is in-flight
- * @returns {(fields: FormFields) => Promise<boolean>} returns.validateAsync - Async validation including RPC check
+ * @returns {boolean} returns.isValidating - True while the `validateAsync` server check is in flight
+ * @returns {boolean} returns.validating - Deprecated alias of `isValidating`
+ * @returns {(fields: FormFields) => Promise<boolean>} returns.validateAsync - Async validation including RPC check;
+ *   resolves `false` if superseded by a newer call, cancelled, or the component unmounts
+ * @returns {() => void} returns.cancelValidation - Abort a stale in-flight check (e.g. when field values change)
  *
  * @example
- * const { errors, validate, isValid, validateAsync, validating } = useFormValidation();
+ * const { validateAsync, isValidating } = useFormValidation();
  *
  * async function onSubmit() {
- *   if (!validate(fields)) return;
- *   await validateAsync(fields);
- *   if (isValid) submit();
+ *   if (isValidating) return;
+ *   if (!(await validateAsync(fields))) return;
+ *   submit();
  * }
  */
 export function useFormValidation(): UseFormValidationResult {
   const [errors, setErrors] = useState<FormErrors>({});
-  const [validating, setValidating] = useState(false);
+  const [isValidating, setIsValidating] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
 
   const validate = useCallback((fields: FormFields): boolean => {
@@ -137,6 +156,11 @@ export function useFormValidation(): UseFormValidationResult {
     const addressResult = validateAddress(fields.merchant);
     if (!addressResult.valid) {
       next.merchant = addressResult.error;
+    }
+
+    const tokenAddressResult = validateAddress(fields.tokenAddress);
+    if (!tokenAddressResult.valid) {
+      next.tokenAddress = tokenAddressResult.error;
     }
 
     const amountResult = validateStroopAmount(
@@ -156,21 +180,32 @@ export function useFormValidation(): UseFormValidationResult {
     return Object.keys(next).length === 0;
   }, []);
 
+  const cancelValidation = useCallback(() => {
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+    setIsValidating(false);
+  }, []);
+
   const validateAsync = useCallback(
     async (fields: FormFields): Promise<boolean> => {
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
+      abortControllerRef.current?.abort();
+      abortControllerRef.current = null;
+
+      if (!validate(fields)) {
+        setIsValidating(false);
+        return false;
       }
 
-      const syncPassed = validate(fields);
-      if (!syncPassed) {
-        return false;
+      // Contract IDs (C…) have no classic account entry, so there is nothing to look up.
+      if (!StrKey.isValidEd25519PublicKey(fields.merchant)) {
+        setIsValidating(false);
+        return true;
       }
 
       const controller = new AbortController();
       abortControllerRef.current = controller;
+      setIsValidating(true);
 
-      setValidating(true);
       try {
         await server.getAccount(fields.merchant);
 
@@ -180,7 +215,7 @@ export function useFormValidation(): UseFormValidationResult {
 
         // Clear merchant error if we previously set it.
         setErrors((prev: FormErrors) => {
-          if (prev.merchant === "Account not found on network.") {
+          if (prev.merchant === ACCOUNT_NOT_FOUND_ERROR) {
             const rest = { ...prev };
             delete rest.merchant;
             return rest;
@@ -196,13 +231,16 @@ export function useFormValidation(): UseFormValidationResult {
 
         setErrors((prev: FormErrors) => ({
           ...prev,
-          merchant: "Account not found on network.",
+          merchant: ACCOUNT_NOT_FOUND_ERROR,
         }));
 
         return false;
       } finally {
-        if (!controller.signal.aborted) {
-          setValidating(false);
+        // Only the latest, non-aborted check may settle the flag; a superseding call or
+        // cancelValidation() owns it otherwise, and nothing may be set after unmount.
+        if (abortControllerRef.current === controller) {
+          abortControllerRef.current = null;
+          setIsValidating(false);
         }
       }
     },
@@ -211,9 +249,8 @@ export function useFormValidation(): UseFormValidationResult {
 
   useEffect(() => {
     return () => {
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
+      abortControllerRef.current?.abort();
+      abortControllerRef.current = null;
     };
   }, []);
 
@@ -221,7 +258,9 @@ export function useFormValidation(): UseFormValidationResult {
     errors,
     validate,
     isValid: Object.keys(errors).length === 0,
-    validating,
+    isValidating,
+    validating: isValidating,
     validateAsync,
+    cancelValidation,
   };
 }

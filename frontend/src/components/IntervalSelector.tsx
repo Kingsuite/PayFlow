@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { BILLING_INTERVALS } from "../constants";
+import { BILLING_INTERVALS, SECONDS_PER_DAY } from "../constants";
 
 const CUSTOM_VALUE = -1;
 
@@ -11,7 +11,7 @@ interface Props {
 export default function IntervalSelector({ value, onChange }: Props) {
   const isPreset = BILLING_INTERVALS.some((i) => i.value === value);
   const [isCustom, setIsCustom] = useState(!isPreset);
-  const [customDays, setCustomDays] = useState(isPreset ? "" : String(Math.round(value / 86400)));
+  const [customDays, setCustomDays] = useState(isPreset ? "" : String(Math.round(value / SECONDS_PER_DAY)));
 
   function handleSelectChange(e: React.ChangeEvent<HTMLSelectElement>) {
     const val = Number(e.target.value);
@@ -26,7 +26,7 @@ export default function IntervalSelector({ value, onChange }: Props) {
   function handleCustomChange(e: React.ChangeEvent<HTMLInputElement>) {
     const days = e.target.value;
     setCustomDays(days);
-    const seconds = Math.round(parseFloat(days) * 86400);
+    const seconds = Math.round(parseFloat(days) * SECONDS_PER_DAY);
     if (!isNaN(seconds) && seconds > 0) onChange(seconds);
   }
 

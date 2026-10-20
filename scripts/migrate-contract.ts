@@ -3,23 +3,36 @@
  * Usage: npx tsx scripts/migrate-contract.ts [--dry-run]
  */
 
-import { Contract, Networks, TransactionBuilder, BASE_FEE, nativeToScVal, Address, xdr } from "@stellar/stellar-sdk";
+import {
+  Contract,
+  Networks,
+  TransactionBuilder,
+  BASE_FEE,
+  nativeToScVal,
+  Address,
+  xdr,
+} from "@stellar/stellar-sdk";
 
-const RPC_URL = process.env.VITE_RPC_URL ?? "https://soroban-testnet.stellar.org";
-const NETWORK_PASSPHRASE = process.env.VITE_NETWORK_PASSPHRASE ?? Networks.TESTNET;
-const CONTRACT_ID = process.env.VITE_CONTRACT_ID ?? "";
+import { logger } from "./logger";
+import { vecAddressToScVal } from "./soroban-admin";
+
+const RPC_URL = process.env.VITE_RPC_URL ?? process.env.RPC_URL ?? "https://soroban-testnet.stellar.org";
+const NETWORK_PASSPHRASE = process.env.VITE_NETWORK_PASSPHRASE ?? process.env.NETWORK_PASSPHRASE ?? Networks.TESTNET;
+const CONTRACT_ID = process.env.VITE_CONTRACT_ID ?? process.env.CONTRACT_ID ?? "";
 
 function addressVal(addr: string): xdr.ScVal {
   return nativeToScVal(Address.fromString(addr), { type: "address" });
 }
 
 async function getSchemaVersion(): Promise<number> {
-  const { Server } = await import("@stellar/stellar-sdk/rpc");
-  const server = new Server(RPC_URL);
+  const { MultiEndpointServer } = await import("./rpc-client.js");
+  const server = new MultiEndpointServer(RPC_URL);
   const contract = new Contract(CONTRACT_ID);
 
   // Use a dummy account for simulation
-  const account = await server.getAccount("GCZDMZCNQ5ZRR7IJK2G2H7C5OZS6M5J2G2H7C5OZS6M5J2G2H7C5OZS6");
+  const account = await server.getAccount(
+    "GCZDMZCNQ5ZRR7IJK2G2H7C5OZS6M5J2G2H7C5OZS6M5J2G2H7C5OZS6",
+  );
 
   const tx = new TransactionBuilder(account, {
     fee: BASE_FEE,
@@ -39,65 +52,81 @@ async function getSchemaVersion(): Promise<number> {
 }
 
 async function migrate(users: string[]): Promise<void> {
-  const { Server } = await import("@stellar/stellar-sdk/rpc");
-  const server = new Server(RPC_URL);
+  const { MultiEndpointServer } = await import("./rpc-client.js");
+  const server = new MultiEndpointServer(RPC_URL);
   const contract = new Contract(CONTRACT_ID);
 
   // Use a dummy account for simulation (in production, use admin wallet)
-  const account = await server.getAccount("GCZDMZCNQ5ZRR7IJK2G2H7C5OZS6M5J2G2H7C5OZS6M5J2G2H7C5OZS6");
+  const account = await server.getAccount(
+    "GCZDMZCNQ5ZRR7IJK2G2H7C5OZS6M5J2G2H7C5OZS6M5J2G2H7C5OZS6",
+  );
 
-  const usersVec = users.map((u) => addressVal(u));
+  // Encode as a real ScVec rather than passing a bare JS array: `contract.call`
+  // spreads its arguments into individually-encoded ScVals, so a raw array was
+  // never valid and had to be laundered through a cast.
+  const usersVec = vecAddressToScVal(users);
 
   const tx = new TransactionBuilder(account, {
     fee: BASE_FEE,
     networkPassphrase: NETWORK_PASSPHRASE,
   })
-    .addOperation(contract.call("migrate", usersVec as unknown as xdr.ScVal))
+    .addOperation(contract.call("migrate", usersVec))
     .setTimeout(30)
     .build();
 
   const result = await server.simulateTransaction(tx);
   if ("error" in result) throw new Error(result.error);
 
-  console.log("Migration transaction simulated successfully");
+  logger.info("Migration transaction simulated successfully");
 }
 
 async function main() {
   const args = process.argv.slice(2);
-  const dryRun = args.includes("--dry-run");
+  // --simulate is the safe default; --dry-run is kept as a backwards-compatible alias.
+  const dryRun = args.includes("--simulate") || args.includes("--dry-run");
 
-  console.log("Starting contract migration...\n");
+  if (!CONTRACT_ID) {
+    logger.error(
+      "ERROR: CONTRACT_ID is not set. Export CONTRACT_ID (or VITE_CONTRACT_ID) before running.",
+    );
+    process.exit(1);
+  }
+
+  logger.info("Starting contract migration...\n");
 
   // Get pre-migration version
   const preVersion = await getSchemaVersion();
-  console.log(`Pre-migration schema version: ${preVersion}`);
+  logger.info(`Pre-migration schema version: ${preVersion}`);
 
   if (dryRun) {
-    console.log("\n[Dry-run mode] Skipping actual migration");
-    console.log(`Post-migration version would be: ${preVersion}`);
+    logger.info("\n[Simulate mode] Validating migration arguments against the network...");
+    // Exercise the ScVal encoding path without submitting anything.
+    await migrate([]);
+    logger.info(`Post-migration version would be: ${preVersion}`);
+    logger.info("\nSimulation successful — no transaction submitted.");
     return;
   }
 
   // Get users to migrate (empty for now, could be loaded from env or args)
   const users: string[] = [];
 
-  console.log("\nCalling migrate...");
+  logger.info("\nCalling migrate...");
   await migrate(users);
 
   // Get post-migration version
   const postVersion = await getSchemaVersion();
-  console.log(`Post-migration schema version: ${postVersion}`);
+  logger.info(`Post-migration schema version: ${postVersion}`);
 
   // Verify version incremented
   if (postVersion <= preVersion) {
-    console.error(`\nERROR: Schema version did not increment! (${preVersion} -> ${postVersion})`);
+    logger.error(`\nERROR: Schema version did not increment! (${preVersion} -> ${postVersion})`);
     process.exit(1);
   }
 
-  console.log(`\nMigration successful! Version incremented from ${preVersion} to ${postVersion}`);
+  logger.info(`\nMigration successful! Version incremented from ${preVersion} to ${postVersion}`);
 }
 
 main().catch((err) => {
-  console.error("Migration failed:", err.message);
+  logger.error("Migration failed:", err.message);
   process.exit(1);
 });
