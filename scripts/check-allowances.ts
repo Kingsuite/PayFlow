@@ -4,6 +4,9 @@
  *
  * Accepts a list of G-addresses (from args or --file) and checks whether each subscriber's
  * allowance for their subscription token covers the next charge amount.
+ *
+ * Rate-limit and retry defaults are imported from allowance-utils.ts.
+ * Previously they were re-declared inline here — see issue #1301.
  */
 
 import { Server } from "@stellar/stellar-sdk/rpc";
@@ -16,12 +19,23 @@ import {
   Address,
   xdr,
 } from "@stellar/stellar-sdk";
+import {
+  DEFAULT_REQUESTS_PER_SECOND,
+  DEFAULT_BURST,
+  DEFAULT_WINDOW_MS,
+} from "./allowance-utils.js";
 
 // ── Configuration ────────────────────────────────────────────────────────────────
 
 const RPC_URL = process.env.RPC_URL || "https://soroban-testnet.stellar.org";
 const CONTRACT_ID = process.env.CONTRACT_ID || "";
 const NETWORK_PASSPHRASE = (process.env.NETWORK_PASSPHRASE ?? Networks.TESTNET) as string;
+
+// Rate-limit settings — imported from allowance-utils.ts (issue #1301).
+// Previously re-declared inline; now sourced from the single canonical definition.
+const REQUESTS_PER_SECOND = DEFAULT_REQUESTS_PER_SECOND;
+const BURST = DEFAULT_BURST;
+const WINDOW_MS = DEFAULT_WINDOW_MS;
 
 if (!CONTRACT_ID) {
   console.error("Error: CONTRACT_ID environment variable is required");
