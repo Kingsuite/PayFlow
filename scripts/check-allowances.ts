@@ -24,6 +24,7 @@ import {
   DEFAULT_BURST,
   DEFAULT_WINDOW_MS,
 } from "./allowance-utils.js";
+import { STROOPS_PER_XLM } from "./lib/contract-limits.js";
 
 // ── Configuration ────────────────────────────────────────────────────────────────
 
@@ -49,9 +50,14 @@ const server = new Server(RPC_URL);
 
 // ── Helpers ───────────────────────────────────────────────────────────────────────
 
+/**
+ * Convert stroops to XLM using STROOPS_PER_XLM from contract-limits.ts.
+ * NOTE: Only valid for XLM and XLM-derived SAC tokens.
+ * For other tokens query the token's decimals() entry-point instead.
+ */
 function stroopsToXlm(stroops: string | bigint): string {
   const value = typeof stroops === "bigint" ? Number(stroops) : Number(stroops);
-  return (value / 10_000_000).toFixed(7);
+  return (value / STROOPS_PER_XLM).toFixed(7);
 }
 
 async function parseAddressListFromFile(path: string): Promise<string[]> {

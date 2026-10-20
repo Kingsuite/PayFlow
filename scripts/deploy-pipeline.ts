@@ -35,6 +35,7 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import { Server } from "@stellar/stellar-sdk/rpc";
+import { CURRENT_SCHEMA_VERSION } from "./lib/contract-limits.js";
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
@@ -42,12 +43,12 @@ const CONTRACT_ID = process.env.CONTRACT_ID ?? "";
 const RPC_URL = process.env.RPC_URL ?? "https://soroban-testnet.stellar.org";
 const NETWORK_PASSPHRASE = process.env.NETWORK_PASSPHRASE ?? Networks.TESTNET;
 const EXPECTED_SCHEMA_VERSION = parseInt(
-  process.env.EXPECTED_SCHEMA_VERSION ?? "2",
+  process.env.EXPECTED_SCHEMA_VERSION ?? String(CURRENT_SCHEMA_VERSION),
   10
 );
 
-/** Latest schema version baked into the scripts (mirrors contract/src/migration.rs). */
-const LATEST_SCHEMA_VERSION = 2;
+/** Latest schema version imported from scripts/lib/contract-limits.ts (mirrors contract/src/migration.rs). */
+const LATEST_SCHEMA_VERSION = CURRENT_SCHEMA_VERSION;
 
 // Dummy source used only for read-only simulation (no auth required).
 const SIM_SOURCE = "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN";

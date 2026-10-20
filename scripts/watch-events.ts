@@ -7,6 +7,7 @@
  */
 
 import { Server } from "@stellar/stellar-sdk/rpc";
+import { STROOPS_PER_XLM } from "./lib/contract-limits.js";
 
 // ── Configuration ────────────────────────────────────────────────────────────────
 
@@ -62,11 +63,13 @@ const eventColors: Record<string, string> = {
 // ── Helpers ───────────────────────────────────────────────────────────────────────
 
 /**
- * Convert stroops to XLM (1 XLM = 10,000,000 stroops)
+ * Convert stroops to XLM using STROOPS_PER_XLM from contract-limits.ts.
+ * NOTE: Only valid for XLM and XLM-derived SAC tokens (7 decimal places).
+ * For other tokens, query the token's decimals() entry-point.
  */
 function stroopsToXlm(stroops: string | number | bigint): string {
   const value = typeof stroops === "bigint" ? Number(stroops) : Number(stroops);
-  const xlm = value / 10_000_000;
+  const xlm = value / STROOPS_PER_XLM;
   return xlm.toFixed(7);
 }
 
