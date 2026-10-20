@@ -16,6 +16,7 @@
 | `WEBHOOK_SECRET` | No | string | Non-empty if provided | alert-expiring-allowances, alert-failed-charges | HMAC-SHA256 signing key for webhooks |
 | `WEBHOOK_DLQ_FILE` | No | string | File path | alert-expiring-allowances, alert-failed-charges | Dead-letter queue for failed webhooks |
 | `NETWORK_PASSPHRASE` | No | string | Default: `Test SDF Network ; September 2015` | keeper, check-allowances | Stellar network passphrase |
+| `ALLOW_MAINNET` | No | boolean | `"true"` required to use the mainnet passphrase; default `false` | keeper | Mainnet safety gate — startup fails if the mainnet passphrase is selected without it |
 | `DRY_RUN` | No | boolean | `"true"` enables; default `false` | keeper | Simulation mode (no live submissions) |
 | `KEEPER_USE_LEGACY_PAGING` | No | boolean | `"true"` enables; default `false` | keeper | Use legacy sequential paging |
 | `LOG_LEVEL` | No | string | `debug` \| `info` \| `warn` \| `error`; default `info` | keeper, indexer, health-check, alert-failed-charges | Log verbosity |
@@ -50,7 +51,7 @@
 
 | Script | Reads These Variables |
 | --- | --- |
-| `keeper.ts` | `CONTRACT_ID`, `RPC_URL`, `RPC_URLS`, `SECRET_KEY`/`KEEPER_SECRET`, `KEEPER_PUBLIC_KEY`, `DRY_RUN`, `BATCH_SIZE`, `INTERVAL_SECONDS`, `KEEPER_USE_LEGACY_PAGING`, `NETWORK_PASSPHRASE`/`NETWORK_PASSTHRASE`, `LOG_LEVEL`, `LOG_FORMAT`, `REPORT_DIR`, `WEBHOOK_URL`, `WEBHOOK_SECRET`, `WEBHOOK_DLQ_FILE`, `ALERT_WINDOW_LEDGERS` |
+| `keeper.ts` | `CONTRACT_ID`, `RPC_URL`, `RPC_URLS`, `SECRET_KEY`/`KEEPER_SECRET`, `KEEPER_PUBLIC_KEY`, `DRY_RUN`, `BATCH_SIZE`, `INTERVAL_SECONDS`, `KEEPER_USE_LEGACY_PAGING`, `NETWORK_PASSPHRASE`/`NETWORK_PASSTHRASE`, `ALLOW_MAINNET`, `LOG_LEVEL`, `LOG_FORMAT`, `REPORT_DIR`, `WEBHOOK_URL`, `WEBHOOK_SECRET`, `WEBHOOK_DLQ_FILE`, `ALERT_WINDOW_LEDGERS` |
 | `indexer.ts` | `CONTRACT_ID`, `RPC_URL`, `RPC_URLS`, `DATA_DIR`, `DB_FILE`, `POLL_INTERVAL_MS`, `START_LEDGER`, `LOG_LEVEL`, `LOG_FORMAT` |
 | `metrics-server.ts` | `METRICS_PORT` |
 | `deploy-pipeline.ts` | `CONTRACT_ID`, `RPC_URL`, `SOROBAN_SOURCE_ACCOUNT`, `NETWORK_PASSPHRASE` |

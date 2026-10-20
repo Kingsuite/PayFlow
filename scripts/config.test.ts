@@ -12,7 +12,17 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { normalizeEnv, getDeprecationWarnings, clearDeprecationWarnings, ConfigSchema } from "./config.js";
+import { Keypair } from "@stellar/stellar-sdk";
+import {
+  normalizeEnv,
+  getDeprecationWarnings,
+  clearDeprecationWarnings,
+  ConfigSchema,
+  PUBLIC_NETWORK_PASSPHRASE,
+  mainnetGateError,
+  redactSecret,
+  publicKeyMismatchError,
+} from "./config.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -121,5 +131,63 @@ describe("docs parity: scripts-environment.md vs ConfigSchema", () => {
     const docKeys = getDocKeys();
     const missing = schemaKeys.filter((k) => !docKeys.includes(k));
     expect(missing).toEqual([]);
+  });
+});
+
+// The following suites port the security assertions of the retired root-level
+// `keeper-config.ts` / `config.test.ts` onto the canonical implementations.
+describe("mainnet safety gate (ALLOW_MAINNET)", () => {
+  it("accepts testnet without ALLOW_MAINNET", () => {
+    expect(mainnetGateError("Test SDF Network ; September 2015", false)).toBeNull();
+    expect(mainnetGateError(undefined, false)).toBeNull();
+  });
+
+  it("blocks mainnet without ALLOW_MAINNET", () => {
+    const error = mainnetGateError(PUBLIC_NETWORK_PASSPHRASE, false);
+    expect(error).toContain("Mainnet");
+    expect(error).toContain("ALLOW_MAINNET");
+    expect(error).toContain("ALLOW_MAINNET=true");
+  });
+
+  it("allows mainnet with ALLOW_MAINNET=true", () => {
+    expect(mainnetGateError(PUBLIC_NETWORK_PASSPHRASE, true)).toBeNull();
+  });
+});
+
+describe("redactSecret", () => {
+  const keypair = Keypair.random();
+  const secret = keypair.secret();
+
+  it("never exposes the full secret", () => {
+    const redacted = redactSecret(secret);
+    expect(redacted).not.toContain(secret);
+    expect(redacted).toBe("S" + "*".repeat(8) + secret.slice(-4));
+  });
+
+  it("leaves text without a secret key unchanged", () => {
+    expect(redactSecret("not a secret")).toBe("not a secret");
+  });
+});
+
+describe("publicKeyMismatchError", () => {
+  const keypair = Keypair.random();
+
+  it("accepts a matching KEEPER_PUBLIC_KEY", () => {
+    expect(publicKeyMismatchError(keypair.secret(), keypair.publicKey())).toBeNull();
+  });
+
+  it("rejects a KEEPER_PUBLIC_KEY that does not match the secret", () => {
+    const otherPublicKey = Keypair.random().publicKey();
+    expect(publicKeyMismatchError(keypair.secret(), otherPublicKey)).toContain(
+      "does not match",
+    );
+  });
+
+  it("skips the check when a value is absent or the secret is malformed", () => {
+    expect(publicKeyMismatchError(undefined, keypair.publicKey())).toBeNull();
+    expect(publicKeyMismatchError(keypair.secret(), undefined)).toBeNull();
+    expect(
+      publicKeyMismatchError("not-a-stellar-secret", keypair.publicKey()),
+    ).toBeNull();
   });
 });

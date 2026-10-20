@@ -24,12 +24,7 @@ PayFlow/
 ├── LICENSE              # MIT License
 ├── README.md
 ├── SECURITY.md
-├── config.ts            # Shared keeper/indexer config
-├── config.test.ts
-├── keeper.ts            # Root keeper entry (canonical copy also in scripts/)
-├── keeper-config.ts
-├── keeper.test.ts
-├── indexer.ts
+├── config.ts            # Config for the root alert-failed-charges script
 ├── package.json         # Root npm scripts (frontend typecheck/build, contract test)
 ├── tsconfig.json
 └── …                    # Additional tracked root notes/scripts (see Root files)
@@ -296,13 +291,13 @@ Root `package.json` `npm test` runs `tsx --test tests/*.test.ts`.
 | `CONTRIBUTING.md`                   | How to contribute                                                           |
 | `LICENSE`                           | MIT                                                                         |
 | `SECURITY.md`                       | Security policy (Testnet-only until audit)                                  |
-| `config.ts` / `keeper.ts` / `indexer.ts` | Root copies of operational entrypoints                                 |
+| `config.ts`                        | Config for the root `alert-failed-charges.ts` script (canonical keeper/indexer live in `scripts/`) |
 | `AGENTS.md`                         | High-level architecture for agents                                          |
 | `CHANGELOG.md`, `TODO.md`, `UIDesign.md` | Project notes                                                          |
 | `issue.md`, `Issue.md`, `Issues.md` | Tracked issue dumps                                                         |
 | `code.md`, `md`, `contract_validation_tasks.ipynb` | Additional tracked notes                                  |
 | `test_migration.rs`                 | Root-level migration test file (canonical tests live in `contract/src/`)    |
-| `alert-failed-charges.ts`, `query-events.ts`, `replay-events.ts` | Root script copies            |
+| `alert-failed-charges.ts`          | Root webhook alert script (`query-events.ts` / `replay-events.ts` live in `scripts/`) |
 
 ---
 

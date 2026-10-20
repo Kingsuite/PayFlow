@@ -101,6 +101,7 @@ Everything is read from `process.env` at module load.
 | `DRY_RUN`                    | No                  | `false`                                  | Exactly `"true"` enables dry-run. Anything else, including `1` or `TRUE`, is false. |
 | `RPC_URL`                    | No                  | `https://soroban-testnet.stellar.org`    | Soroban RPC endpoint. |
 | `NETWORK_PASSPHRASE`         | No                  | `Networks.TESTNET`                       | Must match the network the contract is deployed on. |
+| `ALLOW_MAINNET`              | No                  | `false`                                  | Must be `"true"` to start with the mainnet passphrase (`Public Global Stellar Network ; September 2015`); otherwise startup fails. |
 | `BATCH_SIZE`                 | No                  | on-chain max, else 50                    | **Legacy paging path only** - see [Batch size resolution](#batch-size-resolution). Clamped to 1-200. |
 | `INTERVAL_SECONDS`           | No                  | `3600`                                   | Seconds between cycles in loop mode. Floor of 1. |
 | `REPORT_DIR`                 | No                  | `<script_dir>/data/benchmarks`           | Dry-run reports and the live-cycle pointer file. |
