@@ -62,10 +62,6 @@ function tableExists(db: DatabaseSync, name: string): boolean {
 function main() {
   const dbPath = getArg("--db");
   if (!dbPath) {
-    console.error("--db <path> required");
-    process.exit(1);
-  }
-  if (!dbPath) {
     logger.error("--db <path> required");
     process.exit(1);
   }
@@ -132,10 +128,6 @@ function main() {
 
   const out = getArg("--out");
   const json = JSON.stringify(report, null, 2);
-  if (out) {
-    writeFileSync(out, json);
-    console.log(`Wrote report to ${out}`);
-  } else process.stdout.write(json + "\n");
   if (out) {
     writeFileSync(out, json);
     logger.info(`Wrote report to ${out}`);
