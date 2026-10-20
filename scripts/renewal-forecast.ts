@@ -34,7 +34,7 @@
  */
 
 import { readFileSync, existsSync, writeFileSync } from "node:fs";
-import { resolve, basename } from "node:path";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   forecastRenewals,
@@ -252,10 +252,9 @@ function formatHumanReadable(report: ForecastReport): string {
 }
 
 // Only run main() when THIS file is the entry point (not when imported for testing)
-const _thisFile = basename(fileURLToPath(import.meta.url));
-const _entryFile = basename(process.argv[1] ?? "");
+const isMain = process.argv[1] === fileURLToPath(import.meta.url);
 
-if (_entryFile === _thisFile) {
+if (isMain) {
   main().catch((err: unknown) => {
     console.error(`Fatal error: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
