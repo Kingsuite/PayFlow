@@ -4442,6 +4442,100 @@ fn test_remove_daily_limit_allows_pay_per_use_after_removal() {
     client.pay_per_use(&user, &2_0000000); // should succeed after removal
 }
 
+/// Removing a daily limit clears `DayStart` and `DailySpent` together, so
+/// re-setting the limit afterwards starts a fresh window: the spend counter
+/// resets to zero and the day-start anchor is re-created on the next spend
+/// (issue #1235 — fresh window is the documented safety-valve semantics).
+#[test]
+fn test_remove_then_set_daily_limit_starts_fresh_window() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+
+    client.subscribe(
+        &user,
+        &merchant,
+        &10_0000000,
+        &86400,
+        &token_addr,
+        &None,
+        &None,
+    );
+
+    // Open a window and spend part of the cap.
+    client.set_daily_limit(&user, &10_0000000);
+    client.pay_per_use(&user, &6_0000000);
+
+    let day_start_before = client.get_day_start(&user);
+    assert!(day_start_before.is_some());
+    assert_eq!(client.get_daily_spent(&user), 6_0000000);
+    assert_eq!(
+        client.get_daily_limit_status(&user),
+        DailyLimitStatus {
+            limit: Some(10_0000000),
+            spent: 6_0000000,
+            day_start: day_start_before,
+            remaining: Some(4_0000000),
+        }
+    );
+
+    // Removing the limit discards the whole window.
+    client.remove_daily_limit(&user);
+    assert_eq!(client.get_daily_limit(&user), None);
+    assert_eq!(client.get_daily_spent(&user), 0);
+    assert!(client.get_day_start(&user).is_none());
+    assert_eq!(
+        client.get_daily_limit_status(&user),
+        DailyLimitStatus {
+            limit: None,
+            spent: 0,
+            day_start: None,
+            remaining: None,
+        }
+    );
+
+    // Advance ledger time so a preserved anchor (if one existed) would differ
+    // from a freshly created one.
+    env.ledger().with_mut(|l| {
+        l.timestamp += 3600;
+    });
+
+    // Re-setting the limit does not resurrect the old window.
+    client.set_daily_limit(&user, &10_0000000);
+    assert_eq!(client.get_daily_spent(&user), 0);
+    assert!(client.get_day_start(&user).is_none());
+    assert_eq!(
+        client.get_daily_limit_status(&user),
+        DailyLimitStatus {
+            limit: Some(10_0000000),
+            spent: 0,
+            day_start: None,
+            remaining: Some(10_0000000),
+        }
+    );
+
+    // The next spend opens a fresh window with a new anchor and a zeroed
+    // counter — the previous 6 XLM spend does not carry over.
+    client.pay_per_use(&user, &2_0000000);
+    let day_start_after = client.get_day_start(&user);
+    assert!(day_start_after.is_some());
+    assert_ne!(day_start_before, day_start_after);
+    assert_eq!(client.get_daily_spent(&user), 2_0000000);
+    assert_eq!(
+        client.get_daily_limit_status(&user),
+        DailyLimitStatus {
+            limit: Some(10_0000000),
+            spent: 2_0000000,
+            day_start: day_start_after,
+            remaining: Some(8_0000000),
+        }
+    );
+
+    // The full fresh budget is available again: an 8 XLM spend that would
+    // have breached the old window (6 + 8 > 10) is now accepted.
+    client.pay_per_use(&user, &8_0000000);
+    assert_eq!(client.get_daily_spent(&user), 10_0000000);
+}
+
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Contract admin event tests
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
