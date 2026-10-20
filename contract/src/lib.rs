@@ -13,9 +13,9 @@ extern crate std;
 
 mod admin;
 mod batch;
-mod caps;
 #[cfg(feature = "bench")]
 mod bench;
+mod caps;
 mod charge_exec;
 mod errors;
 mod events;
@@ -46,8 +46,8 @@ use soroban_sdk::{
     contract, contractimpl, contracttype, token, Address, BytesN, Env, String, Symbol, Vec,
 };
 
-pub use batch::ChargeResult;
 pub use batch::CancelResult;
+pub use batch::ChargeResult;
 pub use charge_exec::ChargeSimResult;
 pub use charge_exec::PayPerUseSimResult;
 
@@ -1172,7 +1172,10 @@ impl FlowPay {
     }
 
     pub fn get_subscription_age(env: Env, user: Address) -> Option<u64> {
-        let sub: Subscription = env.storage().persistent().get(&DataKey::Subscription(user))?;
+        let sub: Subscription = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Subscription(user))?;
 
         if sub.created_at == 0 {
             return None; // sentinel for migrated/unknown subscriptions
@@ -1378,7 +1381,13 @@ impl FlowPay {
 
     /// Adds multiple merchants to the whitelist in a single call.
     /// Admin-only. Duplicates are idempotent.
-    /// Returns the number of entries processed.
+    /// Returns the number of merchants **actually added**.
+    ///
+    /// Re-adding an already-whitelisted merchant is a no-op: no storage is
+    /// rewritten, no `merchant_added` event is emitted, and the entry does
+    /// not count toward the returned value (same event-suppression rule as
+    /// `freeze` / `unfreeze`, Issue #820). A batch of all-duplicates
+    /// therefore returns `0`.
     ///
     /// Capped at the configurable whitelist batch limit
     /// (`get_max_whitelist_batch_size`, default 50); panics with
@@ -1388,16 +1397,25 @@ impl FlowPay {
 
         whitelist::require_batch_within_limit(&env, merchants.len());
 
+        let mut added: u32 = 0;
         for merchant in merchants.iter() {
-            whitelist::add_merchant(&env, &merchant);
+            if whitelist::add_merchant(&env, &merchant) {
+                added += 1;
+            }
         }
 
-        merchants.len()
+        added
     }
 
     /// Removes multiple merchants from the whitelist in a single call.
     /// Admin-only. Removing a non-whitelisted merchant is a no-op.
-    /// Returns the number of entries processed.
+    /// Returns the number of merchants **actually removed**.
+    ///
+    /// Removing a merchant that is not currently whitelisted changes no
+    /// storage, emits no `merchant_removed` event, and does not count toward
+    /// the returned value (same event-suppression rule as `freeze` /
+    /// `unfreeze`, Issue #820). A batch of all non-whitelisted entries
+    /// therefore returns `0`.
     ///
     /// Capped at the configurable whitelist batch limit
     /// (`get_max_whitelist_batch_size`, default 50); panics with
@@ -1407,11 +1425,14 @@ impl FlowPay {
 
         whitelist::require_batch_within_limit(&env, merchants.len());
 
+        let mut removed: u32 = 0;
         for merchant in merchants.iter() {
-            whitelist::remove_merchant(&env, &merchant);
+            if whitelist::remove_merchant(&env, &merchant) {
+                removed += 1;
+            }
         }
 
-        merchants.len()
+        removed
     }
 
     /// Enables or disables the merchant whitelist.
@@ -1668,7 +1689,11 @@ impl FlowPay {
         let end = (offset + limit as u64).min(size);
         while i < end {
             if !subscription_count::is_subscriber_index_removed(&env, i) {
-                if let Some(addr) = env.storage().persistent().get::<DataKey, Address>(&DataKey::SubscriberIndex(i)) {
+                if let Some(addr) = env
+                    .storage()
+                    .persistent()
+                    .get::<DataKey, Address>(&DataKey::SubscriberIndex(i))
+                {
                     if let Some(sub) = storage::get_subscription(&env, &addr) {
                         // sub.active required here: paused subscriptions must not be charged/acted upon —
                         // this builds a batch of addresses ready for charge(); cancelled and paused
@@ -2330,7 +2355,10 @@ impl FlowPay {
     ///
     /// No auth required (view-only).
     pub fn get_subscription_token(env: Env, user: Address) -> Option<Address> {
-        let sub: Subscription = env.storage().persistent().get(&DataKey::Subscription(user))?;
+        let sub: Subscription = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Subscription(user))?;
         Some(sub.token)
     }
 
@@ -2652,4 +2680,3 @@ fn ensure_contract_not_paused(env: &Env) {
         env.panic_with_error(ContractError::ContractPaused);
     }
 }
-

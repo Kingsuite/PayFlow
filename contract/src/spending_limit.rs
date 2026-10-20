@@ -1,6 +1,6 @@
 use soroban_sdk::{Address, Env};
 
-use crate::{DataKey, DailyLimitStatus};
+use crate::{DailyLimitStatus, DataKey};
 
 /// Approximate number of ledgers in one day.
 /// Stellar closes ~1 ledger every 5 seconds → 17,280 ledgers/day.
