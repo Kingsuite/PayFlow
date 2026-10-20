@@ -18,6 +18,7 @@
  */
 
 import { DatabaseSync } from "node:sqlite";
+import { fetchWithTimeout } from "./utils/fetchWithTimeout.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -56,7 +57,7 @@ function safeParseData(raw: string): FailedChargeData {
 
 async function sendWebhook(url: string, payload: AlertPayload): Promise<void> {
   try {
-    const response = await fetch(url, {
+    const response = await fetchWithTimeout(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),

@@ -54,7 +54,9 @@ async function getMerchantSubscriberCount(merchant: string): Promise<number> {
     const userAddress = topic[1]?.toString();
     if (!userAddress) continue;
 
-    const eventTime = (event.ledgerCloseTime as number) || 0;
+    const eventTime = (event as { ledgerClosedAt?: string }).ledgerClosedAt
+      ? new Date((event as { ledgerClosedAt: string }).ledgerClosedAt).getTime() / 1000
+      : 0;
 
     if (eventType === "subscribed") {
       const merchantVal = (event as any).value?._value?.merchant;
