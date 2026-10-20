@@ -1,8 +1,6 @@
 use soroban_sdk::{Address, Env, Vec};
 
-use crate::caps::{
-    MAX_MERCHANT_SUB_COUNT_BATCH, REVENUE_DAY_PAGE_SIZE, TOP_MERCHANTS_PAGE_SIZE,
-};
+use crate::caps::{MAX_MERCHANT_SUB_COUNT_BATCH, REVENUE_DAY_PAGE_SIZE, TOP_MERCHANTS_PAGE_SIZE};
 use crate::DataKey;
 
 /// Maximum number of day-index entries retained per merchant after a prune or reset.
