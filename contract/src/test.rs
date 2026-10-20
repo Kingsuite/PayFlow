@@ -2030,9 +2030,11 @@ fn test_whitelist_batch_add_duplicates_does_not_panic() {
     merchants.push_back(m1.clone());
     merchants.push_back(m1.clone());
 
+    // Issue #1236: only the first entry is a real add; the duplicate is a
+    // suppressed no-op and must not count toward the returned value.
     let count = client.whitelist_batch_add(&merchants);
 
-    assert_eq!(count, 2);
+    assert_eq!(count, 1);
     assert!(client.is_merchant_whitelisted(&m1));
 }
 
@@ -2050,10 +2052,132 @@ fn test_whitelist_batch_remove_non_whitelisted_is_noop() {
     let mut merchants = soroban_sdk::Vec::new(&env);
     merchants.push_back(m1.clone());
 
+    // Issue #1236: removing a non-whitelisted merchant is a suppressed no-op
+    // and must not count toward the returned value.
     let count = client.whitelist_batch_remove(&merchants);
 
-    assert_eq!(count, 1);
+    assert_eq!(count, 0);
     assert!(!client.is_merchant_whitelisted(&m1));
+}
+
+/// Issue #1236: re-adding an already-whitelisted merchant via
+/// `whitelist_batch_add` is a no-op — count 0, no `merchant_added` event.
+#[test]
+fn test_whitelist_batch_add_double_add_is_noop_with_suppressed_event() {
+    let (env, contract_id, _token_addr, _user, _merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    env.as_contract(&contract_id, || {
+        storage::set_admin(&env, &admin);
+    });
+
+    let m1 = Address::generate(&env);
+    let mut merchants = soroban_sdk::Vec::new(&env);
+    merchants.push_back(m1.clone());
+
+    // First batch add changes state and emits `merchant_added`.
+    assert_eq!(client.whitelist_batch_add(&merchants), 1);
+    let events_after_first = env.events().all().len();
+
+    // Second batch add of the same merchant is a suppressed no-op.
+    assert_eq!(client.whitelist_batch_add(&merchants), 0);
+    let events_after_second = env.events().all().len();
+
+    assert_eq!(
+        events_after_first, events_after_second,
+        "duplicate whitelist_batch_add must not emit event"
+    );
+    assert!(client.is_merchant_whitelisted(&m1));
+}
+
+/// Issue #1236: a mixed `whitelist_batch_add` batch counts only the entries
+/// that actually changed state.
+#[test]
+fn test_whitelist_batch_add_mixed_batch_counts_only_new() {
+    let (env, contract_id, _token_addr, _user, _merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    env.as_contract(&contract_id, || {
+        storage::set_admin(&env, &admin);
+    });
+
+    let existing = Address::generate(&env);
+    let fresh = Address::generate(&env);
+    client.add_merchant(&existing);
+
+    let mut merchants = soroban_sdk::Vec::new(&env);
+    merchants.push_back(existing.clone());
+    merchants.push_back(fresh.clone());
+
+    // Only `fresh` is a real add; `existing` is a suppressed no-op.
+    assert_eq!(client.whitelist_batch_add(&merchants), 1);
+    assert!(client.is_merchant_whitelisted(&existing));
+    assert!(client.is_merchant_whitelisted(&fresh));
+}
+
+/// Issue #1236: removing an already-removed merchant via
+/// `whitelist_batch_remove` is a no-op — count 0, no `merchant_removed` event.
+#[test]
+fn test_whitelist_batch_remove_double_remove_is_noop_with_suppressed_event() {
+    let (env, contract_id, _token_addr, _user, _merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    env.as_contract(&contract_id, || {
+        storage::set_admin(&env, &admin);
+    });
+
+    let m1 = Address::generate(&env);
+    let mut merchants = soroban_sdk::Vec::new(&env);
+    merchants.push_back(m1.clone());
+    client.add_merchant(&m1);
+
+    // First batch remove changes state and emits `merchant_removed`.
+    assert_eq!(client.whitelist_batch_remove(&merchants), 1);
+    let events_after_first = env.events().all().len();
+
+    // Second batch remove of the same merchant is a suppressed no-op.
+    assert_eq!(client.whitelist_batch_remove(&merchants), 0);
+    let events_after_second = env.events().all().len();
+
+    assert_eq!(
+        events_after_first, events_after_second,
+        "duplicate whitelist_batch_remove must not emit event"
+    );
+    assert!(!client.is_merchant_whitelisted(&m1));
+}
+
+/// Issue #1236: a mixed `whitelist_batch_remove` batch counts only the
+/// entries that were actually whitelisted (and therefore removed).
+#[test]
+fn test_whitelist_batch_remove_mixed_batch_counts_only_whitelisted() {
+    let (env, contract_id, _token_addr, _user, _merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    env.as_contract(&contract_id, || {
+        storage::set_admin(&env, &admin);
+    });
+
+    let whitelisted_a = Address::generate(&env);
+    let not_whitelisted = Address::generate(&env);
+    let whitelisted_b = Address::generate(&env);
+    client.add_merchant(&whitelisted_a);
+    client.add_merchant(&whitelisted_b);
+
+    let mut merchants = soroban_sdk::Vec::new(&env);
+    merchants.push_back(whitelisted_a.clone());
+    merchants.push_back(not_whitelisted.clone());
+    merchants.push_back(whitelisted_b.clone());
+
+    // Only the two whitelisted merchants count; the middle entry is a
+    // suppressed no-op.
+    assert_eq!(client.whitelist_batch_remove(&merchants), 2);
+    assert!(!client.is_merchant_whitelisted(&whitelisted_a));
+    assert!(!client.is_merchant_whitelisted(&not_whitelisted));
+    assert!(!client.is_merchant_whitelisted(&whitelisted_b));
 }
 
 #[test]
