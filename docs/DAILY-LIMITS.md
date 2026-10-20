@@ -163,6 +163,7 @@ Recurring `charge()` remains exempt: a user can hit their daily pay-per-use cap 
 - **Storage:** Removes `DailyLimit`, `DailySpent`, and `DayStart`
 - **Events:** Emits `daily_limit_removed`
 - **Effect:** Immediately clears the cap **and** today’s tracking; subsequent pay-per-use calls are uncapped until a new limit is set
+- **Fresh window on re-set:** Because `DayStart` is deleted along with the other keys, removing the limit and then calling `set_daily_limit` again starts a **fresh window** — the spend counter is reset to zero and the day-start anchor is re-created on the next spend. This is intentional (the supported way to reset daily tracking early), not a bug; see [Removing the limit mid-window](#removing-the-limit-mid-window).
 
 ### `get_daily_limit(user) -> Option<i128>`
 
@@ -297,7 +298,7 @@ Local tests and some Testnet scenarios advance `sequence_number` and `timestamp`
 
 ### Removing the limit mid-window
 
-`remove_daily_limit` deletes all three keys. This is the supported way to **reset early** (see FAQ). Spend tracking does not survive removal.
+`remove_daily_limit` deletes all three keys — `DailyLimit`, `DailySpent`, **and `DayStart`** — together. This is the supported way to **reset early** (see FAQ). Spend tracking does not survive removal: re-setting a limit with `set_daily_limit` afterwards starts a fresh window, and the day-start anchor is re-created on the next spend. Raising the cap with `set_daily_limit` alone (without removing first) does **not** clear `DailySpent` or `DayStart`.
 
 ### Fees and counted spend
 
@@ -434,7 +435,7 @@ Checklist:
 
 ### Can I reset my limit early?
 
-Yes. Call `remove_daily_limit(user)` (requires your signature). That deletes `DailyLimit`, `DailySpent`, and `DayStart` immediately. To keep a cap but clear today’s usage, remove and then `set_daily_limit` again with the desired value — there is no separate “reset spent only” entrypoint. Raising the limit with `set_daily_limit` without removing does **not** clear `DailySpent`; it only raises the ceiling for the current window.
+Yes. Call `remove_daily_limit(user)` (requires your signature). That deletes `DailyLimit`, `DailySpent`, and `DayStart` immediately. To keep a cap but clear today’s usage, remove and then `set_daily_limit` again with the desired value — there is no separate “reset spent only” entrypoint. Because removal also clears `DayStart`, the re-set limit starts a **fresh window** with the spend counter at zero; the day-start anchor is re-created on your next pay-per-use. Raising the limit with `set_daily_limit` without removing does **not** clear `DailySpent`; it only raises the ceiling for the current window.
 
 ### Does `charge()` count toward my daily limit?
 
@@ -472,6 +473,7 @@ Notable cases:
 | `test_pay_per_use_to_daily_limit_shared_with_pay_per_use`                       | Shared budget across entrypoints                    |
 | `test_daily_limit_set_event_emitted` / `test_daily_limit_removed_event_emitted` | Events                                              |
 | `test_get_day_start_visibility`                                                 | `get_day_start` before/after spend and after remove |
+| `test_remove_then_set_daily_limit_starts_fresh_window`                          | Remove-then-set starts a fresh window (DayStart reset) |
 
 ---
 

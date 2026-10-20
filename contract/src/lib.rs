@@ -13,9 +13,9 @@ extern crate std;
 
 mod admin;
 mod batch;
-mod caps;
 #[cfg(feature = "bench")]
 mod bench;
+mod caps;
 mod charge_exec;
 mod errors;
 mod events;
@@ -46,8 +46,8 @@ use soroban_sdk::{
     contract, contractimpl, contracttype, token, Address, BytesN, Env, String, Symbol, Vec,
 };
 
-pub use batch::ChargeResult;
 pub use batch::CancelResult;
+pub use batch::ChargeResult;
 pub use charge_exec::ChargeSimResult;
 pub use charge_exec::PayPerUseSimResult;
 
@@ -1172,7 +1172,10 @@ impl FlowPay {
     }
 
     pub fn get_subscription_age(env: Env, user: Address) -> Option<u64> {
-        let sub: Subscription = env.storage().persistent().get(&DataKey::Subscription(user))?;
+        let sub: Subscription = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Subscription(user))?;
 
         if sub.created_at == 0 {
             return None; // sentinel for migrated/unknown subscriptions
@@ -1668,7 +1671,11 @@ impl FlowPay {
         let end = (offset + limit as u64).min(size);
         while i < end {
             if !subscription_count::is_subscriber_index_removed(&env, i) {
-                if let Some(addr) = env.storage().persistent().get::<DataKey, Address>(&DataKey::SubscriberIndex(i)) {
+                if let Some(addr) = env
+                    .storage()
+                    .persistent()
+                    .get::<DataKey, Address>(&DataKey::SubscriberIndex(i))
+                {
                     if let Some(sub) = storage::get_subscription(&env, &addr) {
                         // sub.active required here: paused subscriptions must not be charged/acted upon —
                         // this builds a batch of addresses ready for charge(); cancelled and paused
@@ -1927,8 +1934,12 @@ impl FlowPay {
         events::publish_daily_limit_set(&env, &user, limit);
     }
 
-    /// Returns the daily spending limit for a user, or `None` if not set.
     /// Removes the caller's daily spending cap for `pay_per_use()`.
+    ///
+    /// Clears `DailyLimit`, `DailySpent`, and `DayStart` together, so
+    /// re-setting a limit afterwards starts a fresh window with the spend
+    /// counter reset to zero. This is the supported way to reset daily
+    /// tracking early.
     pub fn remove_daily_limit(env: Env, user: Address) {
         user.require_auth();
         spending_limit::remove_daily_limit(&env, &user);
@@ -2330,7 +2341,10 @@ impl FlowPay {
     ///
     /// No auth required (view-only).
     pub fn get_subscription_token(env: Env, user: Address) -> Option<Address> {
-        let sub: Subscription = env.storage().persistent().get(&DataKey::Subscription(user))?;
+        let sub: Subscription = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Subscription(user))?;
         Some(sub.token)
     }
 
@@ -2652,4 +2666,3 @@ fn ensure_contract_not_paused(env: &Env) {
         env.panic_with_error(ContractError::ContractPaused);
     }
 }
-
