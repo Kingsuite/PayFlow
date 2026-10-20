@@ -138,7 +138,10 @@ pub struct AdminTransferProposedEventData {
 /// Publishes `admin_transfer_proposed(new_admin)` when a transfer is staged.
 pub fn publish_admin_transfer_proposed(env: &Env, new_admin: &Address) {
     env.events().publish(
-        (Symbol::new(env, "admin_transfer_proposed"), new_admin.clone()),
+        (
+            Symbol::new(env, "admin_transfer_proposed"),
+            new_admin.clone(),
+        ),
         AdminTransferProposedEventData {
             new_admin: new_admin.clone(),
             ledger_sequence: env.ledger().sequence(),
@@ -240,7 +243,10 @@ pub fn publish_merchant_revenue_reset(env: &Env, merchant: &Address) {
 /// day buckets.
 pub fn publish_merchant_revenue_pruned(env: &Env, merchant: &Address, removed_days: u32) {
     env.events().publish(
-        (Symbol::new(env, "merchant_revenue_pruned"), merchant.clone()),
+        (
+            Symbol::new(env, "merchant_revenue_pruned"),
+            merchant.clone(),
+        ),
         MerchantRevenuePrunedEventData {
             merchant: merchant.clone(),
             removed_days,
@@ -300,10 +306,8 @@ pub struct BatchChargeSkipsEventData {
 /// Publishes the `batch_charge_skips` summary. Callers must only invoke this
 /// when at least one interesting (non-`Charged`, non-`Skipped`) outcome occurred.
 pub fn publish_batch_charge_skips(env: &Env, data: BatchChargeSkipsEventData) {
-    env.events().publish(
-        (Symbol::new(env, "batch_charge_skips"),),
-        data,
-    );
+    env.events()
+        .publish((Symbol::new(env, "batch_charge_skips"),), data);
 }
 
 #[soroban_sdk::contracttype]
@@ -494,7 +498,6 @@ pub fn publish_subscription_interval_updated(
     );
 }
 
-
 pub fn publish_referred(env: &Env, user: &Address, referrer: &Address) {
     env.events().publish(
         (Symbol::new(env, "referred"), user.clone()),
@@ -584,14 +587,20 @@ pub fn publish_subscriber_index_cleared(env: &Env, user: &Address, index: u64) {
 
 pub fn publish_merchant_fee_recipient_set(env: &Env, merchant: &Address, recipient: &Address) {
     env.events().publish(
-        (Symbol::new(env, "merchant_fee_recipient_set"), merchant.clone()),
+        (
+            Symbol::new(env, "merchant_fee_recipient_set"),
+            merchant.clone(),
+        ),
         recipient.clone(),
     );
 }
 
 pub fn publish_merchant_fee_recipient_cleared(env: &Env, merchant: &Address) {
     env.events().publish(
-        (Symbol::new(env, "merchant_fee_recipient_cleared"), merchant.clone()),
+        (
+            Symbol::new(env, "merchant_fee_recipient_cleared"),
+            merchant.clone(),
+        ),
         (),
     );
 }
