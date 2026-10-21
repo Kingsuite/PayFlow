@@ -15,6 +15,9 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import { Server } from "@stellar/stellar-sdk/rpc";
+import { logger as rootLogger } from "./logger.js";
+
+const logger = rootLogger.child({ script: "soroban-admin" });
 
 const execFileAsync = promisify(execFile);
 
@@ -223,9 +226,12 @@ export async function retry<T>(
     } catch (error) {
       lastError = error;
       if (attempt < attempts) {
-        console.warn(
-          `${label} failed (attempt ${attempt}/${attempts}); retrying...`,
-        );
+        logger.warn("Retrying operation", {
+          label,
+          attempt,
+          max_attempts: attempts,
+          error: lastError instanceof Error ? lastError.message : String(lastError),
+        });
         await sleep(1_500 * attempt);
       }
     }
@@ -249,7 +255,7 @@ export async function runCommand(
   });
 
   if (stderr.trim()) {
-    console.error(stderr.trim());
+    logger.warn("Command wrote to stderr", { command, stderr: stderr.trim() });
   }
 
   return stdout.trim();

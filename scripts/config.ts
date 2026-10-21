@@ -279,10 +279,13 @@ export function mainnetGateError(
  * a secret key passes through unchanged.
  *
  * Ported from the retired root `keeper-config.ts` (`redactSecret`), so
- * configuration summaries can never leak a full secret.
+ * configuration summaries can never leak a full secret. The pattern uses the
+ * exact base32 alphabet `[A-Z2-7]` (corrected upstream in #1293): characters
+ * 0, 1, 8, 9 never appear in real Stellar keys, and the case-insensitive flag
+ * is omitted so lowercase lookalikes are not falsely redacted.
  */
 export function redactSecret(value: string): string {
-  return value.replace(/S[A-Z0-9]{55}/gi, (match) => {
+  return value.replace(/S[A-Z2-7]{55}/g, (match) => {
     return "S" + "*".repeat(8) + match.slice(-4);
   });
 }

@@ -167,6 +167,42 @@ describe("redactSecret", () => {
   it("leaves text without a secret key unchanged", () => {
     expect(redactSecret("not a secret")).toBe("not a secret");
   });
+
+  it("redacts a realistic Stellar secret key embedded in a string", () => {
+    const input = `keeper starting with secret=${secret} end`;
+    const result = redactSecret(input);
+    expect(result).not.toContain(secret);
+    expect(result).toMatch(/S\*{8}/);
+  });
+
+  it("preserves the last 4 characters of the key in the redacted form", () => {
+    const result = redactSecret(secret);
+    expect(result.endsWith(secret.slice(-4))).toBe(true);
+  });
+
+  it("does not match strings that contain invalid base32 chars (0, 1, 8, 9)", () => {
+    // Regression coverage ported from the retired root keeper-config tests
+    // (issue #1293): the pattern must use the exact base32 alphabet
+    // [A-Z2-7]. Strings built from 0/1/8/9 are structurally impossible
+    // Stellar keys and must pass through unchanged.
+    const fakes = [
+      "S" + "0".repeat(55),
+      "S" + "1".repeat(55),
+      "S" + "8".repeat(55),
+      "S" + "9".repeat(55),
+    ];
+    for (const fake of fakes) {
+      expect(redactSecret(fake)).toBe(fake);
+    }
+  });
+
+  it("produces a masked value with the correct structure (S + 8 asterisks + 4 suffix chars)", () => {
+    const result = redactSecret(secret);
+    expect(result.length).toBe(13);
+    expect(result[0]).toBe("S");
+    expect(result.slice(1, 9)).toBe("********");
+    expect(result.slice(9)).toBe(secret.slice(-4));
+  });
 });
 
 describe("publicKeyMismatchError", () => {

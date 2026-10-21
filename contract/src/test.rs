@@ -491,7 +491,10 @@ fn test_charge_event_records_paid_to_global_collector() {
             charged_event_found = true;
         }
     }
-    assert!(charged_event_found, "expected a charged event with global collector");
+    assert!(
+        charged_event_found,
+        "expected a charged event with global collector"
+    );
 }
 
 #[test]
@@ -539,7 +542,10 @@ fn test_charge_event_records_paid_to_merchant_fee_recipient_override() {
             charged_event_found = true;
         }
     }
-    assert!(charged_event_found, "expected a charged event with merchant override fee recipient");
+    assert!(
+        charged_event_found,
+        "expected a charged event with merchant override fee recipient"
+    );
 }
 
 #[test]
@@ -575,7 +581,10 @@ fn test_charge_event_records_paid_to_none_when_fee_is_zero() {
             charged_event_found = true;
         }
     }
-    assert!(charged_event_found, "expected a charged event with None paid_to");
+    assert!(
+        charged_event_found,
+        "expected a charged event with None paid_to"
+    );
 }
 
 // ─────────────────────────────────────────────
@@ -1373,7 +1382,6 @@ fn test_add_merchant_is_whitelisted_after_single_write() {
     assert!(client.is_merchant_whitelisted(&merchant));
 }
 
-
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Merchant freeze tests
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1632,9 +1640,7 @@ fn test_frozen_merchant_survives_past_default_archive_point() {
 
     // Keep the contract instance alive across the ledger jump.
     env.as_contract(&contract_id, || {
-        env.storage()
-            .instance()
-            .extend_ttl(2_000_000, 2_000_000);
+        env.storage().instance().extend_ttl(2_000_000, 2_000_000);
     });
 
     // Advance past the SDK default archive point (4096 ledgers) but well within
@@ -1690,6 +1696,113 @@ fn test_frozen_merchant_survives_past_default_archive_point() {
         result.is_err(),
         "subscribe to a frozen merchant must panic even after the ledger advance"
     );
+}
+
+/// `extend_merchant_state_ttl` keeps the whitelist, freeze, merchant-index and
+/// merchant-revenue key groups alive past the default archive point
+/// (Issue #1218). It does not change the TTL value itself.
+#[test]
+fn test_extend_merchant_state_ttl_extends_each_key_group() {
+    use soroban_sdk::testutils::storage::Persistent as _;
+
+    let (env, contract_id, _token_addr, _user, _merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    install_admin(&env, &contract_id);
+
+    // Allow `extend_ttl` to reach the full ~90-day merchant window.
+    env.ledger().with_mut(|l| {
+        l.max_entry_ttl = 10_000_000;
+    });
+
+    let wl_merchant = Address::generate(&env);
+    let frz_merchant = Address::generate(&env);
+    let rev_merchant = Address::generate(&env);
+
+    // Whitelist group (each add also lands the merchant in the index).
+    client.add_merchant(&wl_merchant);
+    client.add_merchant(&frz_merchant);
+
+    // Freeze group.
+    client.freeze_merchant(&frz_merchant, &None);
+
+    // Merchant revenue group (indexed via add_merchant, revenue written directly).
+    client.add_merchant(&rev_merchant);
+    let today = env.ledger().timestamp() / 86400;
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::MerchantRevenue(rev_merchant.clone()), &5_000_000_000i128);
+        env.storage()
+            .persistent()
+            .set(&DataKey::MerchantSubCount(rev_merchant.clone()), &1u32);
+        let mut days = Vec::new(&env);
+        days.push_back(today);
+        env.storage()
+            .persistent()
+            .set(&DataKey::MerchantRevenueDayIndex(rev_merchant.clone()), &days);
+        env.storage()
+            .persistent()
+            .set(
+                &DataKey::MerchantRevenueDay(rev_merchant.clone(), today),
+                &5_000_000_000i128,
+            );
+        let mut history = Vec::new(&env);
+        history.push_back(5_000_000_000i128);
+        env.storage()
+            .persistent()
+            .set(&DataKey::MerchantRevenueHistory(rev_merchant.clone()), &history);
+    });
+
+    client.extend_merchant_state_ttl();
+
+    // Every key group must be extended to the merchant-state TTL window.
+    env.as_contract(&contract_id, || {
+        let assert_window = |key: &DataKey, label: &str| {
+            let ttl = env.storage().persistent().get_ttl(key);
+            assert!(
+                ttl >= MERCHANT_STATE_TTL_LEDGERS / 2,
+                "{label} TTL must reach the merchant window ({window}); got {ttl}",
+                window = MERCHANT_STATE_TTL_LEDGERS,
+            );
+        };
+
+        assert_window(&DataKey::WhitelistIndexSize, "WhitelistIndexSize");
+        assert_window(&DataKey::WhitelistIndex(0), "WhitelistIndex(0)");
+        assert_window(
+            &DataKey::MerchantWhitelist(wl_merchant.clone()),
+            "MerchantWhitelist",
+        );
+        assert_window(
+            &DataKey::WhitelistIndexSlot(wl_merchant.clone()),
+            "WhitelistIndexSlot",
+        );
+        assert_window(&DataKey::MerchantIndexSize, "MerchantIndexSize");
+        assert_window(&DataKey::MerchantIndex(0), "MerchantIndex(0)");
+        assert_window(&DataKey::MerchantKnown(frz_merchant.clone()), "MerchantKnown");
+        assert_window(&DataKey::MerchantFrozen(frz_merchant.clone()), "MerchantFrozen");
+        assert_window(&DataKey::MerchantRevenue(rev_merchant.clone()), "MerchantRevenue");
+        assert_window(&DataKey::MerchantSubCount(rev_merchant.clone()), "MerchantSubCount");
+        assert_window(
+            &DataKey::MerchantRevenueDayIndex(rev_merchant.clone()),
+            "MerchantRevenueDayIndex",
+        );
+        assert_window(
+            &DataKey::MerchantRevenueDay(rev_merchant.clone(), today),
+            "MerchantRevenueDay",
+        );
+        assert_window(
+            &DataKey::MerchantRevenueHistory(rev_merchant.clone()),
+            "MerchantRevenueHistory",
+        );
+    });
+
+    // Count event consistent with `subscriber_index_ttl_extended`.
+    let events = env.events().all();
+    let (_, topics, data) = events.get(events.len() - 1).unwrap();
+    let topic_symbol: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
+    let count: u64 = data.try_into_val(&env).unwrap();
+    assert_eq!(topic_symbol, Symbol::new(&env, "merchant_state_ttl_extended"));
+    assert!(count > 0, "merchant_state_ttl_extended must report a positive count");
 }
 
 /// Re-freeze (freeze → unfreeze → freeze) extends the TTL on the second freeze
@@ -3561,7 +3674,15 @@ fn test_batch_charge_zero_allowance_returns_allowance_insufficient() {
     let amount: i128 = 1_0000000;
     let interval: u64 = 86400;
 
-    client.subscribe(&user, &merchant, &amount, &interval, &token_addr, &None, &None);
+    client.subscribe(
+        &user,
+        &merchant,
+        &amount,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
 
     // Revoke the allowance entirely.
     token.approve(&user, &contract_id, &0, &200);
@@ -3582,8 +3703,16 @@ fn test_batch_charge_zero_allowance_returns_allowance_insufficient() {
         crate::ChargeResult::AllowanceInsufficient,
         "zero allowance must produce AllowanceInsufficient"
     );
-    assert_eq!(token.balance(&user), user_balance_before, "user balance unchanged");
-    assert_eq!(token.balance(&merchant), merchant_balance_before, "merchant balance unchanged");
+    assert_eq!(
+        token.balance(&user),
+        user_balance_before,
+        "user balance unchanged"
+    );
+    assert_eq!(
+        token.balance(&merchant),
+        merchant_balance_before,
+        "merchant balance unchanged"
+    );
 }
 
 /// A subscriber whose allowance is exactly the subscription amount is charged.
@@ -3596,7 +3725,15 @@ fn test_batch_charge_exact_allowance_succeeds() {
     let amount: i128 = 5_0000000;
     let interval: u64 = 86400;
 
-    client.subscribe(&user, &merchant, &amount, &interval, &token_addr, &None, &None);
+    client.subscribe(
+        &user,
+        &merchant,
+        &amount,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
 
     // Set allowance to exactly the gross amount.
     token.approve(&user, &contract_id, &amount, &200);
@@ -3631,7 +3768,15 @@ fn test_batch_charge_one_below_allowance_returns_allowance_insufficient() {
     let amount: i128 = 5_0000000;
     let interval: u64 = 86400;
 
-    client.subscribe(&user, &merchant, &amount, &interval, &token_addr, &None, &None);
+    client.subscribe(
+        &user,
+        &merchant,
+        &amount,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
 
     // Set allowance to one stroop below gross.
     token.approve(&user, &contract_id, &(amount - 1), &200);
@@ -3696,17 +3841,33 @@ fn test_batch_charge_mixed_allowance_does_not_abort_healthy_users() {
 
     let results = client.batch_charge(&users);
 
-    assert_eq!(results.get(0).unwrap(), crate::ChargeResult::Charged, "Alice charged");
+    assert_eq!(
+        results.get(0).unwrap(),
+        crate::ChargeResult::Charged,
+        "Alice charged"
+    );
     assert_eq!(
         results.get(1).unwrap(),
         crate::ChargeResult::AllowanceInsufficient,
         "Bob insufficient"
     );
-    assert_eq!(results.get(2).unwrap(), crate::ChargeResult::Charged, "Charlie charged");
+    assert_eq!(
+        results.get(2).unwrap(),
+        crate::ChargeResult::Charged,
+        "Charlie charged"
+    );
 
-    assert_eq!(alice_before - token.balance(&alice), amount, "Alice debited");
+    assert_eq!(
+        alice_before - token.balance(&alice),
+        amount,
+        "Alice debited"
+    );
     assert_eq!(token.balance(&bob), bob_before, "Bob untouched");
-    assert_eq!(charlie_before - token.balance(&charlie), amount, "Charlie debited");
+    assert_eq!(
+        charlie_before - token.balance(&charlie),
+        amount,
+        "Charlie debited"
+    );
     assert_eq!(
         token.balance(&merchant) - merchant_before,
         amount * 2,
@@ -3746,8 +3907,14 @@ fn test_batch_charge_multiple_insufficient_allowances() {
     users.push_back(user_b.clone());
     let results = client.batch_charge(&users);
 
-    assert_eq!(results.get(0).unwrap(), crate::ChargeResult::AllowanceInsufficient);
-    assert_eq!(results.get(1).unwrap(), crate::ChargeResult::AllowanceInsufficient);
+    assert_eq!(
+        results.get(0).unwrap(),
+        crate::ChargeResult::AllowanceInsufficient
+    );
+    assert_eq!(
+        results.get(1).unwrap(),
+        crate::ChargeResult::AllowanceInsufficient
+    );
     assert_eq!(token.balance(&user_a), a_before);
     assert_eq!(token.balance(&user_b), b_before);
 }
@@ -3790,7 +3957,10 @@ fn test_batch_charge_healthy_before_and_after_insufficient() {
     let results = client.batch_charge(&users);
 
     assert_eq!(results.get(0).unwrap(), crate::ChargeResult::Charged);
-    assert_eq!(results.get(1).unwrap(), crate::ChargeResult::AllowanceInsufficient);
+    assert_eq!(
+        results.get(1).unwrap(),
+        crate::ChargeResult::AllowanceInsufficient
+    );
     assert_eq!(results.get(2).unwrap(), crate::ChargeResult::Charged);
 
     assert_eq!(ha_before - token.balance(&healthy_a), amount);
@@ -3808,7 +3978,15 @@ fn test_batch_charge_auto_resume_with_insufficient_allowance() {
     let amount: i128 = 1_0000000;
     let interval: u64 = 86400;
 
-    client.subscribe(&user, &merchant, &amount, &interval, &token_addr, &None, &None);
+    client.subscribe(
+        &user,
+        &merchant,
+        &amount,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
     client.pause_until(&user, &90_000);
 
     // Revoke allowance while paused.
@@ -3847,7 +4025,15 @@ fn test_batch_charge_estimate_reflects_allowance_insufficient() {
     let amount: i128 = 1_0000000;
     let interval: u64 = 86400;
 
-    client.subscribe(&user, &merchant, &amount, &interval, &token_addr, &None, &None);
+    client.subscribe(
+        &user,
+        &merchant,
+        &amount,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
     token.approve(&user, &contract_id, &(amount - 1), &200);
 
     env.ledger().with_mut(|l| {
@@ -3883,7 +4069,15 @@ fn test_batch_charge_allowance_checked_against_gross_not_net() {
     let net: i128 = gross - gross * 1000 / 10_000; // 9_000_000
     let interval: u64 = 86400;
 
-    client.subscribe(&user, &merchant, &gross, &interval, &token_addr, &None, &None);
+    client.subscribe(
+        &user,
+        &merchant,
+        &gross,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
 
     // Set allowance to exactly the net amount -- below gross.
     token.approve(&user, &contract_id, &net, &200);
@@ -4150,11 +4344,9 @@ fn test_get_daily_limit_status_snapshot_and_rollover() {
     assert_eq!(status.day_start, client.get_day_start(&user));
 
     env.as_contract(&contract_id, || {
-        env.storage().temporary().extend_ttl(
-            &DataKey::DailyLimit(user.clone()),
-            35000,
-            35000,
-        );
+        env.storage()
+            .temporary()
+            .extend_ttl(&DataKey::DailyLimit(user.clone()), 35000, 35000);
     });
     env.ledger().with_mut(|ledger| {
         ledger.sequence_number += 17281;
@@ -4355,6 +4547,100 @@ fn test_remove_daily_limit_allows_pay_per_use_after_removal() {
     client.pay_per_use(&user, &2_0000000);
     client.remove_daily_limit(&user);
     client.pay_per_use(&user, &2_0000000); // should succeed after removal
+}
+
+/// Removing a daily limit clears `DayStart` and `DailySpent` together, so
+/// re-setting the limit afterwards starts a fresh window: the spend counter
+/// resets to zero and the day-start anchor is re-created on the next spend
+/// (issue #1235 — fresh window is the documented safety-valve semantics).
+#[test]
+fn test_remove_then_set_daily_limit_starts_fresh_window() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+
+    client.subscribe(
+        &user,
+        &merchant,
+        &10_0000000,
+        &86400,
+        &token_addr,
+        &None,
+        &None,
+    );
+
+    // Open a window and spend part of the cap.
+    client.set_daily_limit(&user, &10_0000000);
+    client.pay_per_use(&user, &6_0000000);
+
+    let day_start_before = client.get_day_start(&user);
+    assert!(day_start_before.is_some());
+    assert_eq!(client.get_daily_spent(&user), 6_0000000);
+    assert_eq!(
+        client.get_daily_limit_status(&user),
+        DailyLimitStatus {
+            limit: Some(10_0000000),
+            spent: 6_0000000,
+            day_start: day_start_before,
+            remaining: Some(4_0000000),
+        }
+    );
+
+    // Removing the limit discards the whole window.
+    client.remove_daily_limit(&user);
+    assert_eq!(client.get_daily_limit(&user), None);
+    assert_eq!(client.get_daily_spent(&user), 0);
+    assert!(client.get_day_start(&user).is_none());
+    assert_eq!(
+        client.get_daily_limit_status(&user),
+        DailyLimitStatus {
+            limit: None,
+            spent: 0,
+            day_start: None,
+            remaining: None,
+        }
+    );
+
+    // Advance ledger time so a preserved anchor (if one existed) would differ
+    // from a freshly created one.
+    env.ledger().with_mut(|l| {
+        l.timestamp += 3600;
+    });
+
+    // Re-setting the limit does not resurrect the old window.
+    client.set_daily_limit(&user, &10_0000000);
+    assert_eq!(client.get_daily_spent(&user), 0);
+    assert!(client.get_day_start(&user).is_none());
+    assert_eq!(
+        client.get_daily_limit_status(&user),
+        DailyLimitStatus {
+            limit: Some(10_0000000),
+            spent: 0,
+            day_start: None,
+            remaining: Some(10_0000000),
+        }
+    );
+
+    // The next spend opens a fresh window with a new anchor and a zeroed
+    // counter — the previous 6 XLM spend does not carry over.
+    client.pay_per_use(&user, &2_0000000);
+    let day_start_after = client.get_day_start(&user);
+    assert!(day_start_after.is_some());
+    assert_ne!(day_start_before, day_start_after);
+    assert_eq!(client.get_daily_spent(&user), 2_0000000);
+    assert_eq!(
+        client.get_daily_limit_status(&user),
+        DailyLimitStatus {
+            limit: Some(10_0000000),
+            spent: 2_0000000,
+            day_start: day_start_after,
+            remaining: Some(8_0000000),
+        }
+    );
+
+    // The full fresh budget is available again: an 8 XLM spend that would
+    // have breached the old window (6 + 8 > 10) is now accepted.
+    client.pay_per_use(&user, &8_0000000);
+    assert_eq!(client.get_daily_spent(&user), 10_0000000);
 }
 
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -4595,7 +4881,10 @@ fn test_batch_pause_overrides_stale_bounded_expiry_and_blocks_auto_resume() {
 
     let sub = client.get_subscription(&user).unwrap();
     assert!(sub.paused);
-    assert_eq!(count_user_events(&env, "subscription_auto_resumed", &user), 0);
+    assert_eq!(
+        count_user_events(&env, "subscription_auto_resumed", &user),
+        0
+    );
 }
 
 #[test]
@@ -5314,9 +5603,7 @@ fn test_migrate_emits_completed_event_with_version_and_count() {
     );
 
     env.as_contract(&contract_id, || {
-        env.storage()
-            .instance()
-            .set(&DataKey::SchemaVersion, &2u32);
+        env.storage().instance().set(&DataKey::SchemaVersion, &2u32);
     });
 
     let mut users = soroban_sdk::Vec::new(&env);
@@ -5904,7 +6191,10 @@ fn test_get_charge_history_ttl_absent_is_zero_present_is_positive_in_tests() {
     client.charge(&user);
 
     let ttl = client.get_charge_history_ttl(&user);
-    assert!(ttl > 0, "test/testutils builds expose a real ChargeHistory TTL");
+    assert!(
+        ttl > 0,
+        "test/testutils builds expose a real ChargeHistory TTL"
+    );
 }
 
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -6191,7 +6481,10 @@ fn test_bump_subscription_extends_pause_expiry_when_present() {
             .storage()
             .persistent()
             .get(&DataKey::PauseExpiry(user.clone()));
-        assert!(expiry.is_some(), "PauseExpiry should exist after pause_until");
+        assert!(
+            expiry.is_some(),
+            "PauseExpiry should exist after pause_until"
+        );
     });
 
     // Bump subscription TTL — should also bump PauseExpiry
@@ -6203,7 +6496,10 @@ fn test_bump_subscription_extends_pause_expiry_when_present() {
             .storage()
             .persistent()
             .get(&DataKey::PauseExpiry(user.clone()));
-        assert!(expiry.is_some(), "PauseExpiry should survive bump_subscription");
+        assert!(
+            expiry.is_some(),
+            "PauseExpiry should survive bump_subscription"
+        );
         assert_eq!(expiry.unwrap(), 90000);
     });
 }
@@ -6710,8 +7006,14 @@ fn test_get_global_volume_window_returns_zero_on_fresh_contract() {
     let client = FlowPayClient::new(&env, &contract_id);
 
     let (volume, window_start) = client.get_global_volume_window();
-    assert_eq!(volume, 0, "accumulated volume should be 0 on fresh contract");
-    assert_eq!(window_start, 0, "window start should be 0 on fresh contract");
+    assert_eq!(
+        volume, 0,
+        "accumulated volume should be 0 on fresh contract"
+    );
+    assert_eq!(
+        window_start, 0,
+        "window start should be 0 on fresh contract"
+    );
 }
 
 #[test]
@@ -6739,8 +7041,14 @@ fn test_get_global_volume_window_correct_values_after_charge() {
     client.charge(&user);
 
     let (volume, window_start) = client.get_global_volume_window();
-    assert_eq!(volume, amount, "accumulated volume should equal the charged amount");
-    assert_eq!(window_start, charge_time, "window_start should equal ledger timestamp at charge time");
+    assert_eq!(
+        volume, amount,
+        "accumulated volume should equal the charged amount"
+    );
+    assert_eq!(
+        window_start, charge_time,
+        "window_start should equal ledger timestamp at charge time"
+    );
 }
 
 #[test]
@@ -6754,8 +7062,24 @@ fn test_get_global_volume_window_resets_after_hour() {
     let amount: i128 = 1_000_0000000;
     let interval: u64 = 86400;
 
-    client.subscribe(&user_a, &merchant, &amount, &interval, &token_addr, &None, &None);
-    client.subscribe(&user_b, &merchant, &amount, &interval, &token_addr, &None, &None);
+    client.subscribe(
+        &user_a,
+        &merchant,
+        &amount,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
+    client.subscribe(
+        &user_b,
+        &merchant,
+        &amount,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
 
     env.ledger().with_mut(|l| {
         l.timestamp += interval + 1;
@@ -6778,11 +7102,15 @@ fn test_get_global_volume_window_resets_after_hour() {
 
     // Window should have reset: only the second charge amount is accumulated
     let (volume_after, window_start_after) = client.get_global_volume_window();
-    assert_eq!(volume_after, amount, "volume should reset to just the new charge amount after window expiry");
-    assert_eq!(window_start_after, second_charge_time, "window_start should be the new charge time after reset");
+    assert_eq!(
+        volume_after, amount,
+        "volume should reset to just the new charge amount after window expiry"
+    );
+    assert_eq!(
+        window_start_after, second_charge_time,
+        "window_start should be the new charge time after reset"
+    );
 }
-
-
 
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // subscribe_with_metadata tests
@@ -7299,7 +7627,11 @@ fn test_removed_merchant_leaves_top_ranking() {
     // ...and from the full merchant index (swap-remove left no slot behind).
     let page = client.get_merchant_page(&0u32, &50u32);
     for i in 0..page.len() {
-        assert_ne!(page.get(i).unwrap(), m2, "removed merchant must leave the index");
+        assert_ne!(
+            page.get(i).unwrap(),
+            m2,
+            "removed merchant must leave the index"
+        );
     }
 
     // Re-adding re-indexes it and it reappears in the ranking.
@@ -7419,7 +7751,10 @@ fn prop_subscribe_interval_respects_min_interval_floor() {
                 &None,
             );
         }));
-        assert!(result.is_err(), "updated floor rejected interval {interval}");
+        assert!(
+            result.is_err(),
+            "updated floor rejected interval {interval}"
+        );
     }
 
     for offset in 0..4 {
@@ -8108,7 +8443,6 @@ fn test_non_admin_set_grace_period_panics() {
 // Issue #45: resume/cancel on grace-lapsed subscriptions
 // -------------------------------------------------------------
 
-
 /// resume on a grace-lapsed subscription must panic with ResumeGraceLapsed (#100).
 #[test]
 #[should_panic(expected = "Error(Contract, #43)")]
@@ -8125,7 +8459,15 @@ fn test_resume_after_grace_lapse_panics() {
     client.propose_grace_period(&grace_period);
     client.commit_grace_period();
 
-    client.subscribe(&user, &merchant, &1_0000000, &interval, &token_addr, &None, &None);
+    client.subscribe(
+        &user,
+        &merchant,
+        &1_0000000,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
     client.pause(&user);
 
     // Advance past interval + grace window
@@ -8152,7 +8494,15 @@ fn test_cancel_after_grace_lapse_succeeds() {
     client.propose_grace_period(&grace_period);
     client.commit_grace_period();
 
-    client.subscribe(&user, &merchant, &1_0000000, &interval, &token_addr, &None, &None);
+    client.subscribe(
+        &user,
+        &merchant,
+        &1_0000000,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
     client.pause(&user);
 
     // Advance past interval + grace window
@@ -8182,7 +8532,15 @@ fn test_resume_within_grace_window_succeeds() {
     client.propose_grace_period(&grace_period);
     client.commit_grace_period();
 
-    client.subscribe(&user, &merchant, &1_0000000, &interval, &token_addr, &None, &None);
+    client.subscribe(
+        &user,
+        &merchant,
+        &1_0000000,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
     client.pause(&user);
 
     // Advance past interval but still inside the grace window
@@ -8194,7 +8552,10 @@ fn test_resume_within_grace_window_succeeds() {
     client.resume(&user);
 
     let sub = client.get_subscription(&user).unwrap();
-    assert!(!sub.paused, "subscription should not be paused after resume");
+    assert!(
+        !sub.paused,
+        "subscription should not be paused after resume"
+    );
     assert!(sub.active, "subscription should remain active");
 }
 
@@ -8206,7 +8567,15 @@ fn test_resume_no_grace_period_always_succeeds() {
 
     // No grace period set -- default is 0
     let interval: u64 = 86400;
-    client.subscribe(&user, &merchant, &1_0000000, &interval, &token_addr, &None, &None);
+    client.subscribe(
+        &user,
+        &merchant,
+        &1_0000000,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
     client.pause(&user);
 
     // Advance far past the interval -- grace is 0 so lapse check is skipped
@@ -8218,7 +8587,10 @@ fn test_resume_no_grace_period_always_succeeds() {
     client.resume(&user);
 
     let sub = client.get_subscription(&user).unwrap();
-    assert!(!sub.paused, "subscription should not be paused after resume");
+    assert!(
+        !sub.paused,
+        "subscription should not be paused after resume"
+    );
 }
 
 // Issue #243: Token address validation
@@ -10084,8 +10456,7 @@ fn test_simulate_pay_per_use_no_state_writes() {
 
     let spent_before = client.get_daily_spent(&user);
     let day_start_before = client.get_day_start(&user);
-    let balance_before = TokenClient::new(&env, &token_addr)
-        .balance(&user);
+    let balance_before = TokenClient::new(&env, &token_addr).balance(&user);
 
     // Would succeed
     assert_eq!(
@@ -10382,7 +10753,15 @@ fn test_charge_result_from_precheck_invariant_violation_is_typed() {
     let client = FlowPayClient::new(&env, &contract_id);
 
     // Happy path: a due, allowed subscription resolves to Charged.
-    client.subscribe(&user, &merchant, &1_0000000, &86400, &token_addr, &None, &None);
+    client.subscribe(
+        &user,
+        &merchant,
+        &1_0000000,
+        &86400,
+        &token_addr,
+        &None,
+        &None,
+    );
     env.ledger().with_mut(|l| l.timestamp += 86401);
     let sub: Subscription = env.as_contract(&contract_id, || {
         env.storage()
@@ -10906,6 +11285,39 @@ fn test_whitelist_index_size_page_and_swap_remove() {
     assert_eq!(client.get_whitelist_size(), 2);
 }
 
+/// Regression: get_whitelist_page must not trap on extreme u32 offset/limit
+/// pairs and must clamp the page size like the other *_page readers
+/// (Issue #1220).
+#[test]
+fn test_get_whitelist_page_overflow_safe() {
+    let (env, contract_id, _token_addr, _user, _merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    install_admin(&env, &contract_id);
+
+    let m1 = Address::generate(&env);
+    let m2 = Address::generate(&env);
+    client.add_merchant(&m1);
+    client.add_merchant(&m2);
+
+    // limit == 0 returns an empty page.
+    assert!(client.get_whitelist_page(&0, &0).is_empty());
+
+    // offset past the size returns an empty page.
+    assert!(client.get_whitelist_page(&100, &10).is_empty());
+
+    // u32::MAX offset must not trap; the whitelist is smaller than the offset.
+    assert!(client.get_whitelist_page(&u32::MAX, &10).is_empty());
+
+    // u32::MAX limit is clamped to WHITELIST_PAGE_SIZE; only 2 merchants exist.
+    let page = client.get_whitelist_page(&0, &u32::MAX);
+    assert!(page.len() <= 2);
+    assert!(page.iter().any(|m| m == m1));
+    assert!(page.iter().any(|m| m == m2));
+
+    // Both extreme at once must not trap.
+    assert!(client.get_whitelist_page(&u32::MAX, &u32::MAX).is_empty());
+}
+
 #[test]
 #[should_panic(expected = "HostError: Error(Contract, #2)")]
 fn test_subscription_amount_validation_zero() {
@@ -11266,9 +11678,7 @@ fn test_size_key_survives_past_default_archive_point_after_append() {
 
     // Keep the contract instance alive across the ledger jump.
     env.as_contract(&contract_id, || {
-        env.storage()
-            .instance()
-            .extend_ttl(2_000_000, 2_000_000);
+        env.storage().instance().extend_ttl(2_000_000, 2_000_000);
     });
 
     env.as_contract(&contract_id, || {
@@ -11482,10 +11892,7 @@ fn test_clear_subscriber_index_entry_emits_audit_event() {
     let topic_user: Address = topics.get(1).unwrap().try_into_val(&env).unwrap();
     let index: u64 = data.try_into_val(&env).unwrap();
 
-    assert_eq!(
-        topic_symbol,
-        Symbol::new(&env, "subscriber_index_cleared")
-    );
+    assert_eq!(topic_symbol, Symbol::new(&env, "subscriber_index_cleared"));
     assert_eq!(topic_user, user);
     assert_eq!(index, 0);
 }
@@ -11564,15 +11971,11 @@ fn test_get_subscription_token_updates_on_resubscribe() {
     let (env, contract_id, token_a, user, merchant) = setup();
     let client = FlowPayClient::new(&env, &contract_id);
 
-    client.subscribe(
-        &user, &merchant, &1_0000000, &86400, &token_a, &None, &None,
-    );
+    client.subscribe(&user, &merchant, &1_0000000, &86400, &token_a, &None, &None);
     assert_eq!(client.get_subscription_token(&user), Some(token_a.clone()));
 
     let token_b = setup_second_token(&env, &contract_id, &user);
-    client.subscribe(
-        &user, &merchant, &2_0000000, &86400, &token_b, &None, &None,
-    );
+    client.subscribe(&user, &merchant, &2_0000000, &86400, &token_b, &None, &None);
 
     assert_eq!(
         client.get_subscription_token(&user),
@@ -12000,7 +12403,15 @@ fn test_merchant_fee_recipient_survives_archival_before_charge() {
     client.set_merchant_fee_recipient(&merchant, &custom_recipient);
 
     let interval: u64 = 86400;
-    client.subscribe(&user, &merchant, &1000, &interval, &token_addr, &None, &None);
+    client.subscribe(
+        &user,
+        &merchant,
+        &1000,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
 
     // Advance the ledger well past the live-until the host assigns to a fresh
     // persistent entry (min_persistent_entry_ttl = 4096 ledgers): without the
@@ -12050,7 +12461,15 @@ fn test_merchant_fee_recipient_ttl_refreshed_on_charge() {
     client.set_merchant_fee_recipient(&merchant, &custom_recipient);
 
     let interval: u64 = 86400;
-    client.subscribe(&user, &merchant, &1000, &interval, &token_addr, &None, &None);
+    client.subscribe(
+        &user,
+        &merchant,
+        &1000,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
 
     // First charge: advances past the default persistent-entry TTL (4096
     // ledgers) so the read-time extend in get_merchant_fee_recipient is what
@@ -12102,7 +12521,15 @@ fn test_merchant_fee_recipient_global_fallback_when_not_configured() {
 
     // No custom recipient set for this merchant
     let interval: u64 = 86400;
-    client.subscribe(&user, &merchant, &1000, &interval, &token_addr, &None, &None);
+    client.subscribe(
+        &user,
+        &merchant,
+        &1000,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
 
     env.ledger().with_mut(|l| {
         l.timestamp += interval + 1;
@@ -12154,9 +12581,33 @@ fn test_get_next_charge_batch_filtering() {
 
     let interval: u64 = 86400;
 
-    client.subscribe(&user_due, &merchant, &1_0000000, &interval, &token_addr, &None, &None);
-    client.subscribe(&user_paused, &merchant, &1_0000000, &interval, &token_addr, &None, &None);
-    client.subscribe(&user_cancelled, &merchant, &1_0000000, &interval, &token_addr, &None, &None);
+    client.subscribe(
+        &user_due,
+        &merchant,
+        &1_0000000,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
+    client.subscribe(
+        &user_paused,
+        &merchant,
+        &1_0000000,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
+    client.subscribe(
+        &user_cancelled,
+        &merchant,
+        &1_0000000,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
 
     client.pause(&user_paused);
     client.cancel(&user_cancelled);
@@ -12165,7 +12616,15 @@ fn test_get_next_charge_batch_filtering() {
         l.timestamp += interval + 1;
     });
 
-    client.subscribe(&user_not_due, &merchant, &1_0000000, &interval, &token_addr, &None, &None);
+    client.subscribe(
+        &user_not_due,
+        &merchant,
+        &1_0000000,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
 
     let batch = client.get_next_charge_batch(&0, &10, &None);
     assert_eq!(batch.len(), 1);
@@ -12182,9 +12641,33 @@ fn test_get_next_charge_batch_pagination() {
 
     let interval: u64 = 86400;
 
-    client.subscribe(&user1, &merchant, &1_0000000, &interval, &token_addr, &None, &None);
-    client.subscribe(&user2, &merchant, &1_0000000, &interval, &token_addr, &None, &None);
-    client.subscribe(&user3, &merchant, &1_0000000, &interval, &token_addr, &None, &None);
+    client.subscribe(
+        &user1,
+        &merchant,
+        &1_0000000,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
+    client.subscribe(
+        &user2,
+        &merchant,
+        &1_0000000,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
+    client.subscribe(
+        &user3,
+        &merchant,
+        &1_0000000,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
 
     env.ledger().with_mut(|l| {
         l.timestamp += interval + 1;
@@ -12475,9 +12958,7 @@ fn test_auto_resume_fires_after_worst_case_ttl_archival() {
 
     // Keep the contract instance alive across the ledger jump.
     env.as_contract(&contract_id, || {
-        env.storage()
-            .instance()
-            .extend_ttl(2_000_000, 2_000_000);
+        env.storage().instance().extend_ttl(2_000_000, 2_000_000);
     });
 
     // Advance past the SDK default archive point (4096 ledgers) but well
@@ -12546,7 +13027,10 @@ fn test_pause_until_keeps_active_flag_true_across_readers() {
     // The paused subscription row keeps active = true.
     let sub = client.get_subscription(&user).unwrap();
     assert_eq!(sub.paused, true);
-    assert_eq!(sub.active, true, "pause_until must not clear the active flag (issue #1009)");
+    assert_eq!(
+        sub.active, true,
+        "pause_until must not clear the active flag (issue #1009)"
+    );
 
     // Reader agreement: counts, index pages and health all treat the
     // paused subscription as a live subscriber.
@@ -12625,9 +13109,7 @@ fn test_migration_v2_to_v3_populates_referrer() {
     );
 
     env.as_contract(&contract_id, || {
-        env.storage()
-            .instance()
-            .set(&DataKey::SchemaVersion, &2u32);
+        env.storage().instance().set(&DataKey::SchemaVersion, &2u32);
     });
 
     assert_eq!(client.get_schema_version(), 2);
@@ -12688,7 +13170,10 @@ fn test_charge_result_variant_count() {
     assert_ne!(n, i, "NoSubscription and Inactive must differ");
     assert_ne!(i, p, "Inactive and Paused must differ");
     assert_ne!(p, g, "Paused and GracePeriodElapsed must differ");
-    assert_ne!(g, a, "GracePeriodElapsed and AllowanceInsufficient must differ");
+    assert_ne!(
+        g, a,
+        "GracePeriodElapsed and AllowanceInsufficient must differ"
+    );
 
     // Lock the variant count — increase when a variant is appended.
     //
@@ -12721,7 +13206,10 @@ fn test_charge_result_round_trip() {
     for variant in variants.iter() {
         let val: soroban_sdk::Val = variant.clone().into_val(&env);
         let decoded = ChargeResult::try_from_val(&env, &val).unwrap();
-        assert_eq!(*variant, decoded, "round-trip failed for a ChargeResult variant");
+        assert_eq!(
+            *variant, decoded,
+            "round-trip failed for a ChargeResult variant"
+        );
     }
 }
 
@@ -12738,7 +13226,6 @@ fn test_charge_result_partial_eq_identity() {
         ChargeResult::AllowanceInsufficient
     );
 }
-
 
 // ─────────────────────────────────────────────
 // CONTRACT-804: checked arithmetic in trial, fee, and volume paths
@@ -12770,8 +13257,14 @@ fn test_extend_trial_overflow_fails_with_typed_error() {
     client.subscribe(&user, &merchant, &1000, &86400, &token_addr, &None, &None);
 
     // Push last_charged to the u64 ceiling, then ask for one second more.
-    client.extend_trial(&user, &(u64::MAX - client.get_subscription(&user).unwrap().last_charged));
-    assert_eq!(client.get_subscription(&user).unwrap().last_charged, u64::MAX);
+    client.extend_trial(
+        &user,
+        &(u64::MAX - client.get_subscription(&user).unwrap().last_charged),
+    );
+    assert_eq!(
+        client.get_subscription(&user).unwrap().last_charged,
+        u64::MAX
+    );
 
     let res = client.try_extend_trial(&user, &1);
 
@@ -12817,7 +13310,10 @@ fn test_calculate_fee_amount_at_max_subscription_amount_does_not_overflow() {
             fee::calculate_fee_amount(&env, MAX_SUBSCRIPTION_AMOUNT, 10_000),
             MAX_SUBSCRIPTION_AMOUNT
         );
-        assert_eq!(fee::calculate_fee_amount(&env, MAX_SUBSCRIPTION_AMOUNT, 0), 0);
+        assert_eq!(
+            fee::calculate_fee_amount(&env, MAX_SUBSCRIPTION_AMOUNT, 0),
+            0
+        );
     });
 }
 
@@ -12944,13 +13440,7 @@ fn subscribe_funded_user(
     let token = TokenClient::new(env, token_addr);
     token.approve(&user, contract_id, &10_000_0000000, &200000);
     client.subscribe(
-        &user,
-        merchant,
-        &1_0000000,
-        &interval,
-        token_addr,
-        &None,
-        &None,
+        &user, merchant, &1_0000000, &interval, token_addr, &None, &None,
     );
     user
 }
@@ -12969,7 +13459,8 @@ fn test_batch_charge_emits_skips_summary_with_counts() {
     client.commit_grace_period();
 
     let paused_user = subscribe_funded_user(&env, &contract_id, &token_addr, &merchant, interval);
-    let cancelled_user = subscribe_funded_user(&env, &contract_id, &token_addr, &merchant, interval);
+    let cancelled_user =
+        subscribe_funded_user(&env, &contract_id, &token_addr, &merchant, interval);
     let grace_user = subscribe_funded_user(&env, &contract_id, &token_addr, &merchant, interval);
     let unknown_user = Address::generate(&env);
 
@@ -13116,10 +13607,7 @@ fn test_batch_charge_allowance_insufficient_counted_in_skips_summary() {
 
     let results = client.batch_charge(&users);
     assert_eq!(results.get(0).unwrap(), ChargeResult::Charged);
-    assert_eq!(
-        results.get(1).unwrap(),
-        ChargeResult::AllowanceInsufficient
-    );
+    assert_eq!(results.get(1).unwrap(), ChargeResult::AllowanceInsufficient);
 
     let summary = find_batch_charge_skips(&env).expect("expected a batch_charge_skips event");
     assert_eq!(summary.total, 2);
@@ -13179,14 +13667,20 @@ fn test_merchant_fee_recipient_cleared_on_remove_and_freeze() {
 
     client.add_merchant(&merchant);
     client.set_merchant_fee_recipient(&merchant, &recipient);
-    assert_eq!(client.get_merchant_fee_recipient(&merchant), Some(recipient.clone()));
+    assert_eq!(
+        client.get_merchant_fee_recipient(&merchant),
+        Some(recipient.clone())
+    );
 
     client.remove_merchant(&merchant);
     assert_eq!(client.get_merchant_fee_recipient(&merchant), None);
 
     client.add_merchant(&merchant);
     client.set_merchant_fee_recipient(&merchant, &recipient);
-    assert_eq!(client.get_merchant_fee_recipient(&merchant), Some(recipient.clone()));
+    assert_eq!(
+        client.get_merchant_fee_recipient(&merchant),
+        Some(recipient.clone())
+    );
 
     client.freeze_merchant(&merchant, &None);
     assert_eq!(client.get_merchant_fee_recipient(&merchant), None);
@@ -13282,15 +13776,7 @@ fn test_subscribe_self_subscription_panics() {
     let (env, contract_id, token_addr, user, _merchant) = setup();
     let client = FlowPayClient::new(&env, &contract_id);
 
-    client.subscribe(
-        &user,
-        &user,
-        &1_0000000,
-        &86400,
-        &token_addr,
-        &None,
-        &None,
-    );
+    client.subscribe(&user, &user, &1_0000000, &86400, &token_addr, &None, &None);
 }
 
 #[test]
@@ -13432,7 +13918,7 @@ fn test_batch_charge_over_default_max_panics() {
     client.batch_charge(&users);
 }
 
-// 
+//
 // Issue #810: authorization-boundary tests
 //
 // Each admin entrypoint is tested in two states:
@@ -13445,7 +13931,7 @@ fn test_batch_charge_over_default_max_panics() {
 // variant cannot force `require_admin` to fail in this environment; rejection
 // is instead covered by the no-admin panic path and the contract's own
 // `require_admin` guard.
-// 
+//
 
 // -- freeze_merchant ----------------------------------------------------------
 
@@ -14033,13 +14519,7 @@ fn subscribe_users(
     for _ in 0..count {
         let user = setup_funded_user(env, &client.address, token_addr);
         client.subscribe(
-            &user,
-            merchant,
-            &1_0000000,
-            &86400,
-            token_addr,
-            &None,
-            &None,
+            &user, merchant, &1_0000000, &86400, token_addr, &None, &None,
         );
         users.push_back(user.clone());
     }
@@ -14295,8 +14775,6 @@ fn test_active_subscriber_page_only_last_active() {
     assert_eq!(page.len(), 1);
     assert_eq!(page.get(0).unwrap(), users.get(9).unwrap());
 }
-
-
 
 // ─────────────────────────────────────────────────────────────
 // Admin event tests — #1027 / #1028 / #1029 / #1030
@@ -14654,10 +15132,9 @@ fn test_overflow_interval_in_batch_does_not_abort_batch() {
         created_at: 0,
     };
     env.as_contract(&contract_id, || {
-        env.storage().persistent().set(
-            &crate::DataKey::Subscription(user.clone()),
-            &extreme_sub,
-        );
+        env.storage()
+            .persistent()
+            .set(&crate::DataKey::Subscription(user.clone()), &extreme_sub);
     });
 
     // Advance time so user2's interval has elapsed.
@@ -14711,10 +15188,9 @@ fn test_is_grace_lapsed_saturates_safely() {
         created_at: 0,
     };
     env.as_contract(&contract_id, || {
-        env.storage().persistent().set(
-            &crate::DataKey::Subscription(user.clone()),
-            &extreme_sub,
-        );
+        env.storage()
+            .persistent()
+            .set(&crate::DataKey::Subscription(user.clone()), &extreme_sub);
     });
 
     // The subscription health check exercises is_grace_lapsed and
@@ -14722,7 +15198,10 @@ fn test_is_grace_lapsed_saturates_safely() {
     let health = client.get_subscription_health(&user);
     // With saturating arithmetic the deadline = u64::MAX, which is always in
     // the future, so the grace window is NOT lapsed.
-    assert!(!health.within_grace, "grace must not be lapsed for extreme interval");
+    assert!(
+        !health.within_grace,
+        "grace must not be lapsed for extreme interval"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -14830,7 +15309,15 @@ fn test_subscribe_while_paused_returns_contract_paused() {
 
     client.pause_contract();
 
-    client.subscribe(&user, &merchant, &1_0000000, &86400, &token_addr, &None, &None);
+    client.subscribe(
+        &user,
+        &merchant,
+        &1_0000000,
+        &86400,
+        &token_addr,
+        &None,
+        &None,
+    );
 }
 
 /// subscribe succeeds when the contract is not paused (baseline).
@@ -14840,7 +15327,15 @@ fn test_subscribe_while_unpaused_succeeds() {
     let client = FlowPayClient::new(&env, &contract_id);
 
     // Contract is not paused by default — subscribe must succeed.
-    client.subscribe(&user, &merchant, &1_0000000, &86400, &token_addr, &None, &None);
+    client.subscribe(
+        &user,
+        &merchant,
+        &1_0000000,
+        &86400,
+        &token_addr,
+        &None,
+        &None,
+    );
     assert!(client.get_subscription(&user).is_some());
 }
 
@@ -14854,7 +15349,13 @@ fn test_subscribe_paused_does_not_emit_legacy_error_30() {
     client.pause_contract();
 
     let result = client.try_subscribe(
-        &user, &merchant, &1_0000000, &86400, &token_addr, &None, &None,
+        &user,
+        &merchant,
+        &1_0000000,
+        &86400,
+        &token_addr,
+        &None,
+        &None,
     );
 
     let err = result.expect_err("must fail when paused");
@@ -14881,7 +15382,15 @@ fn test_subscribe_no_admin_pause_succeeds() {
     let client = FlowPayClient::new(&env, &contract_id);
     // Never call pause_contract — no admin configured in this path.
     // Subscribe must work fine on a non-paused contract.
-    client.subscribe(&user, &merchant, &1_0000000, &86400, &token_addr, &None, &None);
+    client.subscribe(
+        &user,
+        &merchant,
+        &1_0000000,
+        &86400,
+        &token_addr,
+        &None,
+        &None,
+    );
     let sub = client.get_subscription(&user).unwrap();
     assert!(sub.active);
 }
@@ -14957,7 +15466,15 @@ fn test_prune_compacts_day_index() {
     install_admin(&env, &contract_id);
 
     let interval: u64 = 86400;
-    client.subscribe(&user, &merchant, &1_0000000, &interval, &token_addr, &None, &None);
+    client.subscribe(
+        &user,
+        &merchant,
+        &1_0000000,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
 
     // Charge on day 1
     env.ledger().with_mut(|l| l.timestamp += interval + 1);
@@ -14967,7 +15484,15 @@ fn test_prune_compacts_day_index() {
     // Advance to day 2 and re-subscribe so we can charge again
     env.ledger().with_mut(|l| l.timestamp += 86400);
     let user2 = setup_funded_user(&env, &contract_id, &token_addr);
-    client.subscribe(&user2, &merchant, &1_0000000, &interval, &token_addr, &None, &None);
+    client.subscribe(
+        &user2,
+        &merchant,
+        &1_0000000,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
     env.ledger().with_mut(|l| l.timestamp += interval + 1);
     client.charge(&user2);
 
@@ -14998,7 +15523,15 @@ fn test_repeated_prune_cycles_keep_index_bounded() {
     install_admin(&env, &contract_id);
 
     let interval: u64 = 3600; // 1-hour interval so we can do many without max-sub-interval
-    client.subscribe(&user, &merchant, &1_0000000, &interval, &token_addr, &None, &None);
+    client.subscribe(
+        &user,
+        &merchant,
+        &1_0000000,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
 
     // Do 5 charge-prune cycles; each cycle leaves one new day entry and prunes
     // the oldest, verifying the index shrinks / stays bounded.
@@ -15030,14 +15563,25 @@ fn test_reset_clears_day_index() {
     install_admin(&env, &contract_id);
 
     let interval: u64 = 86400;
-    client.subscribe(&user, &merchant, &1_0000000, &interval, &token_addr, &None, &None);
+    client.subscribe(
+        &user,
+        &merchant,
+        &1_0000000,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
 
     env.ledger().with_mut(|l| l.timestamp += interval + 1);
     client.charge(&user);
 
     // At least one day entry should exist
     let page_before = client.get_merchant_revenue_day_page(&merchant, &0u32, &30u32);
-    assert!(!page_before.is_empty(), "should have at least one day entry before reset");
+    assert!(
+        !page_before.is_empty(),
+        "should have at least one day entry before reset"
+    );
 
     // Reset clears the day-index
     client.reset_merchant_revenue(&merchant);
@@ -15054,7 +15598,15 @@ fn test_reset_merchant_revenue_emits_event() {
     install_admin(&env, &contract_id);
 
     let interval: u64 = 86400;
-    client.subscribe(&user, &merchant, &1_0000000, &interval, &token_addr, &None, &None);
+    client.subscribe(
+        &user,
+        &merchant,
+        &1_0000000,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
     env.ledger().with_mut(|l| l.timestamp += interval + 1);
     client.charge(&user);
 
@@ -15075,7 +15627,15 @@ fn test_prune_merchant_revenue_days_emits_event() {
     install_admin(&env, &contract_id);
 
     let interval: u64 = 86400;
-    client.subscribe(&user, &merchant, &1_0000000, &interval, &token_addr, &None, &None);
+    client.subscribe(
+        &user,
+        &merchant,
+        &1_0000000,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
     env.ledger().with_mut(|l| l.timestamp += interval + 1);
     client.charge(&user);
     let day = env.ledger().timestamp() / 86400;
@@ -15089,8 +15649,7 @@ fn test_prune_merchant_revenue_days_emits_event() {
     let topic_symbol: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
     assert_eq!(topic_symbol, Symbol::new(&env, "merchant_revenue_pruned"));
 
-    let payload: crate::events::MerchantRevenuePrunedEventData =
-        data.try_into_val(&env).unwrap();
+    let payload: crate::events::MerchantRevenuePrunedEventData = data.try_into_val(&env).unwrap();
     assert_eq!(payload.removed_days, 1u32);
 }
 
@@ -15107,7 +15666,15 @@ fn test_reset_merchant_revenue_full_clear_consistency() {
     install_admin(&env, &contract_id);
 
     let interval: u64 = 86400;
-    client.subscribe(&user, &merchant, &1_0000000, &interval, &token_addr, &None, &None);
+    client.subscribe(
+        &user,
+        &merchant,
+        &1_0000000,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
 
     env.ledger().with_mut(|l| l.timestamp += interval + 1);
     client.charge(&user);
@@ -15125,10 +15692,13 @@ fn test_reset_merchant_revenue_full_clear_consistency() {
     assert_eq!(client.get_merchant_revenue(&merchant), 0);
     assert_eq!(client.get_merchant_revenue_summary(&merchant), (0, 0, 0, 0));
     assert_eq!(client.get_merchant_revenue_day(&merchant, &day), 0);
-    assert!(client.get_merchant_revenue_day_page(&merchant, &0u32, &30u32).is_empty());
-    assert!(client.get_merchant_revenue_history(&merchant, &10u32).is_empty());
+    assert!(client
+        .get_merchant_revenue_day_page(&merchant, &0u32, &30u32)
+        .is_empty());
+    assert!(client
+        .get_merchant_revenue_history(&merchant, &10u32)
+        .is_empty());
 }
-
 
 // ─────────────────────────────────────────────────────────────
 // Issue #1200: saturating grace-period math in precheck_charge
@@ -15149,8 +15719,43 @@ fn test_batch_charge_survives_extreme_grace_period() {
     client.propose_grace_period(&huge_grace);
     client.commit_grace_period();
 
+    // Subscribe with the default minimum interval so the charge is due after
+    // one interval. (Interval 1 would now trip `ContractError::IntervalTooShort`
+    // because `subscribe` enforces the configurable min-interval floor.)
+    let interval: u64 = 3600;
     // Subscribe with a normal interval so the charge is due at timestamp 1.
+    let interval: u64 = 3600;
     let interval: u64 = 1;
+    client.subscribe(
+        &user,
+        &merchant,
+        &1_0000000,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
+
+    // Advance past the interval so the charge is due.
+    env.ledger().with_mut(|l| {
+        l.timestamp += interval + 1;
+    });
+
+    // batch_charge must return a per-user result vector and not trap, even
+    // with a near-u64::MAX grace period configured.
+    // batch_charge must return a per-user result vector, not trap.
+    let mut users = soroban_sdk::Vec::new(&env);
+    users.push_back(user.clone());
+    let results = client.batch_charge(&users);
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results.get(0).unwrap(), crate::ChargeResult::Charged);
+}
+    // Exactly one result, and it must be a successful charge (not an error).
+    assert_eq!(results.len(), 1);
+    assert_eq!(results.get(0).unwrap(), crate::ChargeResult::Charged);
+}
+
 // ─────────────────────────────────────────────────────────────
 // Issue #1223: legacy `paused && !active` rows remain excluded
 // from get_active_subscriber_page (design invariant regression test)
@@ -15177,32 +15782,116 @@ fn test_batch_charge_survives_extreme_grace_period() {
 fn test_legacy_paused_subscription_remains_listed() {
     let (env, contract_id, token_addr, user, merchant) = setup();
     let client = FlowPayClient::new(&env, &contract_id);
+    let interval: u64 = 86400;
 
     // Subscribe so the user is in the subscriber index.
+    let interval: u64 = 3600;
     client.subscribe(
         &user,
         &merchant,
         &1_0000000,
+        &86400,
         &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
+
+    // Sanity: user is in the active page before we mutate the row.
+    let page_before = client.get_active_subscriber_page(&0u64, &10u32);
+    assert!(
+        page_before.contains(&user),
+        "user must be listed before mutation"
+    );
+
+    // Simulate a legacy "paused && !active" row by directly writing storage.
+    // This reproduces the state that pre-#1009 `pause_until` could write.
+    // We do NOT call cancel() — the cancellation counter path is intentionally
+    // bypassed so we can isolate the flag semantics.
+    env.as_contract(&contract_id, || {
+        let key = crate::DataKey::Subscription(user.clone());
+        let mut sub: crate::Subscription = env.storage().persistent().get(&key).unwrap();
+        // Legacy state: paused=true, active=false (NOT a cancelled row).
+    // Simulate a legacy `paused && !active` row by writing the subscription
+    // directly into storage with active=false, paused=true.
+    env.as_contract(&contract_id, || {
+        let key = DataKey::Subscription(user.clone());
+        let mut sub: Subscription = env.storage().persistent().get(&key).unwrap();
+        sub.active = false;
+        sub.paused = true;
+        env.storage().persistent().set(&key, &sub);
+    });
+
+    // Confirm the raw stored state.
+    let raw = client.get_subscription(&user).unwrap();
+    assert!(!raw.active, "raw active must be false (legacy state)");
+    assert!(raw.paused, "raw paused must be true (legacy state)");
+
+    // Design invariant: get_active_subscriber_page uses sub.active, so a
+    // legacy `paused && !active` row must NOT appear in the active page.
+    // This matches the documented behavior in storage.rs and locks the
+    // same invariant as scenario_legacy_paused_inactive_row_reader_semantics.
+    let page_after = client.get_active_subscriber_page(&0u64, &10u32);
+    assert!(
+        !page_after.contains(&user),
+        "legacy paused&&!active row must remain EXCLUDED from get_active_subscriber_page \
+         (sub.active is the intentional gate; see storage.rs design notes)"
+    );
+
+    // The raw append-only page still enumerates the slot (it does not filter
+    // by active state).
+    let raw_page = client.get_subscriber_page(&0u64, &10u32);
+    assert!(
+        raw_page.contains(&user),
+        "legacy row must still appear in the raw get_subscriber_page"
+    );
+}
+
+/// Complementary: a truly cancelled row (active=false, paused=false) must
+/// NOT appear in get_active_subscriber_page. This confirms that the active
+/// page excludes both cancelled and legacy paused rows.
+#[test]
+fn test_cancelled_subscription_not_listed() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+
+    client.subscribe(
+        &user,
+        &merchant,
+        &1_0000000,
         &86400,
         &token_addr,
         &None,
         &None,
     );
 
-    // Advance past the interval so the charge is due.
-    env.ledger().with_mut(|l| {
-        l.timestamp += interval + 1;
-    });
+    // Cancel through the normal path — active=false, paused=false.
+    client.cancel(&user);
 
-    // batch_charge must return a per-user result vector, not trap.
-    let mut users = soroban_sdk::Vec::new(&env);
-    users.push_back(user.clone());
-    let results = client.batch_charge(&users);
+    let raw = client.get_subscription(&user).unwrap();
+    assert!(!raw.active, "active must be false after cancel");
+    assert!(!raw.paused, "paused must be false after cancel");
 
-    // Exactly one result, and it must be a successful charge (not an error).
-    assert_eq!(results.len(), 1);
-    assert_eq!(results.get(0).unwrap(), crate::ChargeResult::Charged);
+    // is_cancelled returns true for !active && !paused.
+    // The active page must exclude this row.
+    let page = client.get_active_subscriber_page(&0u64, &10u32);
+    assert!(
+        !page.contains(&user),
+        "cancelled subscription must not appear in get_active_subscriber_page"
+    // The active-subscriber page must NOT include this legacy row
+    // (sub.active == false).
+    let active_page = client.get_active_subscriber_page(&0u64, &10u32);
+    assert!(
+        !active_page.contains(&user),
+        "legacy paused && !active row must not appear in get_active_subscriber_page"
+    );
+
+    // The raw append-only page still returns the slot (tombstone not set).
+    let raw_page = client.get_subscriber_page(&0u64, &10u32);
+    assert!(
+        raw_page.contains(&user),
+        "legacy paused && !active row must still appear in get_subscriber_page (raw index)"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -15319,6 +16008,15 @@ fn test_subscription_health_within_grace_with_grace_period() {
 
     let grace: u64 = 7200;
     let interval: u64 = 3600;
+    client.subscribe(
+        &user,
+        &merchant,
+        &1_0000000,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
     client.propose_grace_period(&grace);
     client.commit_grace_period();
     // Sanity: user is in the active page before we mutate the row.
@@ -15370,26 +16068,37 @@ fn test_subscription_health_within_grace_with_grace_period() {
 fn test_cancelled_subscription_not_listed() {
     let (env, contract_id, token_addr, user, merchant) = setup();
     let client = FlowPayClient::new(&env, &contract_id);
+    install_admin(&env, &contract_id);
+
+    let grace: u64 = 3600;
+    let interval: u64 = 3600;
+    client.propose_grace_period(&grace);
+    client.commit_grace_period();
 
     client.subscribe(
         &user,
         &merchant,
         &1_0000000,
         &interval,
-        &86400,
+        &86400u64,
         &token_addr,
         &None,
         &None,
     );
 
-    // Advance past interval but still inside grace window.
-    env.ledger().with_mut(|l| {
-        l.timestamp += interval + grace / 2;
-    });
+    // Cancel through the normal path — active=false, paused=false.
+    client.cancel(&user);
 
     let health = client.get_subscription_health(&user);
     assert!(health.charge_due, "charge must be due inside grace window");
-    assert!(health.within_grace, "within_grace must be true inside grace window");
+    assert!(
+        health.within_grace,
+        "within_grace must be true inside grace window"
+    let page = client.get_active_subscriber_page(&0u64, &10u32);
+    assert!(
+        !page.contains(&user),
+        "cancelled subscription must not appear in get_active_subscriber_page"
+    );
 }
 
 /// When grace_period > 0 and we are past the grace window, both charge_due
@@ -15420,8 +16129,14 @@ fn test_subscription_health_past_grace_window() {
     });
 
     let health = client.get_subscription_health(&user);
-    assert!(!health.charge_due, "charge must not be due after grace window");
-    assert!(!health.within_grace, "within_grace must be false after grace window");
+    assert!(
+        !health.charge_due,
+        "charge must not be due after grace window"
+    );
+    assert!(
+        !health.within_grace,
+        "within_grace must be false after grace window"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -15432,8 +16147,19 @@ fn test_subscription_health_past_grace_window() {
 /// structured MetadataClearedEventData payload (not a bare address).
 #[test]
 fn test_clear_metadata_emits_exactly_one_publisher() {
-    let (env, contract_id, _token_addr, user, _merchant) = setup();
+    let (env, contract_id, token_addr, user, merchant) = setup();
     let client = FlowPayClient::new(&env, &contract_id);
+
+    let interval: u64 = 3600;
+    client.subscribe(
+        &user,
+        &merchant,
+        &1_0000000,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
 
     let label = soroban_sdk::String::from_str(&env, "gold");
     // set_metadata / clear_metadata are the public contract functions.
@@ -15451,19 +16177,81 @@ fn test_clear_metadata_emits_exactly_one_publisher() {
             }
         }
     }
-    assert_eq!(count, 1, "exactly one metadata_cleared event must be emitted");
-    // Cancel through the normal path — active=false, paused=false.
+    assert_eq!(
+        count, 1,
+        "exactly one metadata_cleared event must be emitted"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Issue #1222: scan_subscriber_slots helper — targeted tests
+// ─────────────────────────────────────────────────────────────
+
+/// Sparse index: some slots are tombstoned (cancelled users whose index entries
+/// were cleared). `get_subscriber_page` must skip tombstoned slots and return
+/// only the live addresses, maintaining the correct count.
+///
+/// Note: cancellation automatically tombstones the subscriber index slot via
+/// `remove_subscriber_index` in `cancel_inner`, so the page is already sparse
+/// immediately after cancel — no need to call `clear_subscriber_index_entry`.
+#[test]
+fn test_scan_sparse_index_skips_tombstones() {
+    let (env, contract_id, token_addr, user_a, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+
+    let user_b = setup_funded_user(&env, &contract_id, &token_addr);
+    let user_c = setup_funded_user(&env, &contract_id, &token_addr);
+
+    // Subscribe all three users — they occupy slots 0, 1, 2.
+    client.subscribe(&user_a, &merchant, &1_0000000, &86400, &token_addr, &None, &None);
+    client.subscribe(&user_b, &merchant, &1_0000000, &86400, &token_addr, &None, &None);
+    client.subscribe(&user_c, &merchant, &1_0000000, &86400, &token_addr, &None, &None);
+    assert_eq!(client.get_subscriber_count(), 3);
+
+    // Cancel user_b — this tombstones slot 1 automatically via remove_subscriber_index.
+    client.cancel(&user_b);
+
+    // The raw page scans slots 0..3; slot 1 is tombstoned and must be skipped.
+    let page = client.get_subscriber_page(&0u64, &10u32);
+    assert_eq!(page.len(), 2, "tombstoned slot must be skipped");
+    assert!(page.contains(&user_a));
+    assert!(!page.contains(&user_b));
+    assert!(page.contains(&user_c));
+}
+
+/// All-tombstoned page: when every slot in the requested window has been
+/// tombstoned (via cancel), `get_subscriber_page` must return an empty Vec.
+#[test]
+fn test_scan_all_tombstoned_page_returns_empty() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+
+    // Subscribe and immediately cancel — cancel tombstones the slot automatically.
+    client.subscribe(&user, &merchant, &1_0000000, &86400, &token_addr, &None, &None);
     client.cancel(&user);
 
-    let raw = client.get_subscription(&user).unwrap();
-    assert!(!raw.active, "active must be false after cancel");
-    assert!(!raw.paused, "paused must be false after cancel");
+    // The only slot is tombstoned — page must be empty.
+    let page = client.get_subscriber_page(&0u64, &10u32);
+    assert_eq!(page.len(), 0, "all-tombstoned page must return empty Vec");
+}
 
-    // is_cancelled returns true for !active && !paused.
-    // The active page must exclude this row.
-    let page = client.get_active_subscriber_page(&0u64, &10u32);
-    assert!(
-        !page.contains(&user),
-        "cancelled subscription must not appear in get_active_subscriber_page"
-    );
+/// Offset past the end: when `offset >= subscriber_count`, the scan window is
+/// outside the index range and all three reader functions must return empty.
+#[test]
+fn test_scan_offset_past_end_returns_empty() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+
+    client.subscribe(&user, &merchant, &1_0000000, &86400, &token_addr, &None, &None);
+    assert_eq!(client.get_subscriber_count(), 1);
+
+    // offset 1 == size — out of bounds.
+    let page = client.get_subscriber_page(&1u64, &10u32);
+    assert_eq!(page.len(), 0, "get_subscriber_page: offset at size must return empty");
+
+    let active_page = client.get_active_subscriber_page(&1u64, &10u32);
+    assert_eq!(active_page.len(), 0, "get_active_subscriber_page: offset at size must return empty");
+
+    let batch = client.get_next_charge_batch(&1u64, &10u32, &None);
+    assert_eq!(batch.len(), 0, "get_next_charge_batch: offset at size must return empty");
 }
