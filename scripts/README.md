@@ -409,6 +409,15 @@ Smoke after Compose:
 docker compose logs keeper | grep '"message":"Keeper started'
 ```
 
+### Exit codes (--once mode)
+
+| Code | Meaning |
+| ---- | ------- |
+| `0`  | Cycle completed — all batches were processed. Charging nothing is normal when no subscriptions are due. |
+| `1`  | Cycle could not run — no subscribers were checked and errors occurred (e.g. complete RPC failure at startup). |
+
+Per-subscriber charge failures (insufficient allowance, contract panics for a single user, etc.) are written to the DLQ and surfaced via Prometheus metrics. They do **not** influence the exit code. Loop mode (`--once` not set) never exits non-zero except on an unhandled fatal error.
+
 ### Logs and metrics
 
 - Structured logger: keeper uses the shared `logger.ts` with child context

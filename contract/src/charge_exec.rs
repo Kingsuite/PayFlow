@@ -10,7 +10,7 @@ use crate::storage;
 use crate::subscription_history;
 use crate::validation;
 use crate::whitelist;
-use crate::{extend_subscription_ttl, DataKey, MAX_AMOUNT, Subscription};
+use crate::{extend_subscription_ttl, DataKey, Subscription, MAX_AMOUNT};
 
 /// ─────────────────────────────────────────────────────────────
 /// Shared dry-run precheck helper (Issue #801 — Issue 005)
@@ -81,9 +81,7 @@ impl DryRunSkipOutcome {
     pub(crate) fn into_batch_result(self) -> ChargeResult {
         match self {
             DryRunSkipOutcome::NoSubscription => ChargeResult::NoSubscription,
-            DryRunSkipOutcome::ContractPaused => {
-                ChargeResult::Inactive
-            }
+            DryRunSkipOutcome::ContractPaused => ChargeResult::Inactive,
             DryRunSkipOutcome::SubscriptionPaused => ChargeResult::Paused,
             DryRunSkipOutcome::Inactive => ChargeResult::Inactive,
             DryRunSkipOutcome::NotDue => ChargeResult::Skipped,
@@ -218,8 +216,7 @@ pub fn simulate_charge(env: &Env, user: Address) -> ChargeSimResult {
     let key = DataKey::Subscription(user.clone());
     let sub_opt: Option<Subscription> = env.storage().persistent().get(&key);
 
-    let (outcome, sub_after_precheck) =
-        dry_run_skip_precheck(env, &user, sub_opt, true);
+    let (outcome, sub_after_precheck) = dry_run_skip_precheck(env, &user, sub_opt, true);
 
     match outcome {
         DryRunSkipOutcome::ProceedToAllowance => {
