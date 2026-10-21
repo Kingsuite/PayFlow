@@ -20,6 +20,9 @@
  * ─────────────────────
  *   CONTRACT_ID          Required. Deployed FlowPay contract ID.
  *   KEEPER_SECRET        Required. Stellar secret key (S…).
+ *                       The key is never logged: every log line and every
+ *                       error string this script writes is scrubbed by
+ *                       `redactSecrets` (`logger.ts`) before it is emitted.
  *   RPC_URL              Soroban RPC endpoint (default: testnet).
  *   NETWORK_PASSPHRASE   Stellar network passphrase (default: testnet).
  *   KEEPER_MAX_RETRIES   Retry attempts per entry (default: 3).
@@ -67,6 +70,8 @@ import {
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { isChargeDue } from "./batch-optimizer";
+import { decodeChargeResults } from "./lib/charge-results.js";
+import { redactSecrets } from "./logger.js";
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -98,13 +103,30 @@ const LEVEL_ORDER: Record<string, number> = {
 };
 const activeLevel = LEVEL_ORDER[LOG_LEVEL] ?? 1;
 
+/**
+ * JSON log sink.
+ *
+ * Every message and metadata value is passed through `redactSecrets` before
+ * it is written, so the keeper secret can never end up in the DLQ replay log
+ * or in an error string that came from the RPC layer.
+ */
 function log(
   level: "debug" | "info" | "warn" | "error",
   msg: string,
   meta?: Record<string, unknown>,
 ): void {
   if ((LEVEL_ORDER[level] ?? 0) < activeLevel) return;
-  const entry = { ts: new Date().toISOString(), level, msg, ...(meta ?? {}) };
+  const safeMeta: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(meta ?? {})) {
+    safeMeta[redactSecrets(key)] =
+      typeof value === "string" ? redactSecrets(value) : value;
+  }
+  const entry = {
+    ts: new Date().toISOString(),
+    level,
+    msg: redactSecrets(msg),
+    ...safeMeta,
+  };
   (level === "error" || level === "warn"
     ? process.stderr
     : process.stdout
@@ -173,31 +195,25 @@ async function retryWithBackoff<T>(
 
 // ── RPC helpers ───────────────────────────────────────────────────────────────
 
+/**
+ * Tally the per-address outcomes of a replayed batch.
+ *
+ * `ChargeResult` travels as an `scvU32` discriminant inside an `scvVec`, so
+ * the decoder in `lib/charge-results.ts` is used here. The previous
+ * implementation branched on `scvVec`/`scvMap`, neither of which is ever
+ * reachable, so `charged` was always 0 and `skipped` always equalled the
+ * batch size. See docs/charge-results.md.
+ */
 function parseChargeResults(retval: xdr.ScVal): {
   charged: number;
   skipped: number;
 } {
+  const names = decodeChargeResults(retval);
   let charged = 0;
-  let skipped = 0;
-  for (const item of retval.vec() ?? []) {
-    try {
-      const name = item.switch().name;
-      if (name === "scvVec") {
-        item.vec()?.[0]?.sym()?.toString() === "Charged"
-          ? charged++
-          : skipped++;
-      } else if (name === "scvMap") {
-        item.map()?.[0]?.key()?.sym()?.toString() === "Charged"
-          ? charged++
-          : skipped++;
-      } else {
-        skipped++;
-      }
-    } catch {
-      skipped++;
-    }
+  for (const name of names) {
+    if (name === "Charged") charged++;
   }
-  return { charged, skipped };
+  return { charged, skipped: names.length - charged };
 }
 
 async function replayEntry(
@@ -408,7 +424,9 @@ async function main(): Promise<void> {
       });
       replayed++;
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = redactSecrets(
+        err instanceof Error ? err.message : String(err),
+      );
       log("error", "Entry failed after retries — moving to dead-batches", {
         offset: entry.offset,
         error: msg,
@@ -447,7 +465,7 @@ main().catch((err: unknown) => {
       ts: new Date().toISOString(),
       level: "error",
       msg: "Fatal unhandled error",
-      error: err instanceof Error ? err.message : String(err),
+      error: redactSecrets(err instanceof Error ? err.message : String(err)),
     }),
   );
   process.exit(1);

@@ -15,6 +15,7 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import { Server } from "@stellar/stellar-sdk/rpc";
+import { redactSecrets } from "./logger.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -73,6 +74,18 @@ export function loadSorobanConfig(
 
 export function createServer(config: Pick<SorobanConfig, "rpcUrl">): Server {
   return new Server(config.rpcUrl);
+}
+
+/**
+ * A copy of the config with the admin secret key masked, safe to log.
+ */
+export function redactSorobanConfig(config: SorobanConfig): SorobanConfig {
+  return {
+    ...config,
+    adminSecretKey: config.adminSecretKey
+      ? redactSecrets(config.adminSecretKey)
+      : "",
+  };
 }
 
 export function parseStellarAddress(address: string): Address {
@@ -174,8 +187,10 @@ export async function invokeContract(
 
   const sendResult = await server.sendTransaction(tx);
   if (sendResult.errorResult) {
+    // The host error string is scrubbed before it becomes part of an Error
+    // message, so it can never carry secret material into a log line.
     throw new Error(
-      `Transaction submission failed for ${method}: ${sendResult.errorResult.toString()}`,
+      `Transaction submission failed for ${method}: ${redactSecrets(sendResult.errorResult.toString())}`,
     );
   }
 
@@ -231,7 +246,9 @@ export async function retry<T>(
     }
   }
 
-  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  throw lastError instanceof Error
+    ? new Error(redactSecrets(lastError.message))
+    : new Error(redactSecrets(String(lastError)));
 }
 
 function sleep(ms: number): Promise<void> {
@@ -249,7 +266,9 @@ export async function runCommand(
   });
 
   if (stderr.trim()) {
-    console.error(stderr.trim());
+    // Child-process stderr is scrubbed too — a CLI invoked here may echo the
+    // admin secret back on failure.
+    console.error(redactSecrets(stderr.trim()));
   }
 
   return stdout.trim();
