@@ -63,9 +63,10 @@ vi.mock("../hooks/useSubscriptionSync", () => ({
   }),
 }));
 
-const { mockPause, mockPauseUntil } = vi.hoisted(() => ({
+const { mockPause, mockPauseUntil, mockPauseTx } = vi.hoisted(() => ({
   mockPause: vi.fn(),
   mockPauseUntil: vi.fn(),
+  mockPauseTx: { state: "idle", error: null as string | null, isError: false },
 }));
 
 vi.mock("../hooks/usePauseResume", () => ({
@@ -73,9 +74,9 @@ vi.mock("../hooks/usePauseResume", () => ({
     pause: mockPause,
     pauseUntil: mockPauseUntil,
     resume: vi.fn(),
-    pauseTx: { state: "idle", error: null },
-    pauseUntilTx: { state: "idle", error: null },
-    resumeTx: { state: "idle", error: null },
+    pauseTx: mockPauseTx,
+    pauseUntilTx: { state: "idle", error: null, isError: false },
+    resumeTx: { state: "idle", error: null, isError: false },
   }),
 }));
 
@@ -1077,6 +1078,36 @@ describe("SubscriptionCard", () => {
       expect(screen.queryByTestId("transfer-subscription-modal")).not.toBeInTheDocument();
       await userEvent.click(screen.getByTestId("transfer-subscription-button"));
       expect(screen.getByTestId("transfer-subscription-modal")).toBeInTheDocument();
+    });
+  });
+
+  describe("Structured transaction error handling (Issue #1262)", () => {
+    afterEach(() => {
+      mockPauseTx.state = "idle";
+      mockPauseTx.error = null;
+      mockPauseTx.isError = false;
+    });
+
+    it("displays error with role='alert' and warning icon when status is failed without relying on Error prefix", () => {
+      mockPauseTx.state = "failed";
+      mockPauseTx.error = "Connection dropped unexpectedly";
+      mockPauseTx.isError = true;
+
+      render(
+        <SubscriptionCard
+          subscription={createMockSubscription({ active: true, paused: false })}
+          userKey={mockUserKey}
+          onSign={mockOnSign}
+          onRefresh={mockOnRefresh}
+        />
+      );
+
+      const alert = screen.getByRole("alert");
+      expect(alert).toBeInTheDocument();
+      expect(alert).toHaveTextContent(/Connection dropped unexpectedly/);
+      const status = screen.getByTestId("subscription-card-status");
+      expect(status).toHaveTextContent(/⚠️ Connection dropped unexpectedly/);
+      expect(status).toHaveClass("text-error");
     });
   });
 });

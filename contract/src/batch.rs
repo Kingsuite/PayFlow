@@ -7,8 +7,6 @@ use crate::grace;
 use crate::validation;
 use crate::{DataKey, Subscription};
 
-pub use crate::caps::DEFAULT_BATCH_SIZE as MAX_BATCH_SIZE;
-
 // ─────────────────────────────────────────────────────────────
 // Decode-compatibility note
 // ─────────────────────────────────────────────────────────────
@@ -57,6 +55,9 @@ pub enum CancelResult {
     AlreadyCancelled,
     /// Subscription was paused; cancel succeeded but state was unusual.
     PausedCancelled,
+    /// A paused (but active) subscription was cancelled.
+    PausedCancelled,
+    /// Subscription belongs to a frozen merchant and was cancelled.
     /// Subscription's merchant was frozen; cancel succeeded but state was unusual.
     MerchantFrozen,
 }
@@ -386,7 +387,7 @@ mod tests {
                 get_max_batch_size(&env),
                 crate::caps::get_max_batch_size(&env)
             );
-            assert_eq!(get_max_batch_size(&env), MAX_BATCH_SIZE);
+            assert_eq!(get_max_batch_size(&env), crate::MAX_BATCH_SIZE);
         });
     }
 
@@ -450,13 +451,13 @@ pub fn batch_cancel(env: &Env, users: Vec<Address>) -> Vec<CancelResult> {
                     let was_paused = sub.paused;
                     let merchant_frozen = crate::whitelist::is_frozen(env, &sub.merchant);
 
+                    // Cancel regardless of state, exactly once.
                     crate::cancel_inner(env, &user);
                     crate::events::publish_cancelled(env, &user);
 
-                    // Return distinct result codes for unusual state cancellations
                     if merchant_frozen {
                         CancelResult::MerchantFrozen
-                    } else if was_paused {
+                    } else if sub.paused {
                         CancelResult::PausedCancelled
                     } else {
                         CancelResult::Cancelled

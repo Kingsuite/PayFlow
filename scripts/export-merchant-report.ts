@@ -140,6 +140,9 @@ async function getMerchantSubscriberCountViaRpc(
     const userAddress = topic[1]?.toString();
     if (!userAddress) continue;
 
+    const eventTime = (event as { ledgerClosedAt?: string }).ledgerClosedAt
+      ? new Date((event as { ledgerClosedAt: string }).ledgerClosedAt).getTime() / 1000
+      : 0;
     const eventTime =
       Number(
         (event as { ledgerCloseTime?: number }).ledgerCloseTime ??

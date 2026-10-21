@@ -44,6 +44,7 @@ export interface UseTransactionResult {
   status: TxStatus;
   hash: string | null;
   error: string | null;
+  isError?: boolean;
   submit: (buildAndSign: () => Promise<string>, label?: string) => Promise<string>;
 }
 
@@ -177,5 +178,5 @@ export function useTransaction(): UseTransactionResult {
     [circuitOpen, clearTimer]
   );
 
-  return { status, hash, error, submit };
+  return { status, hash, error, isError: status === "failed", submit };
 }
