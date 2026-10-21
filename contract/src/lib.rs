@@ -1395,7 +1395,13 @@ impl FlowPay {
 
     /// Adds multiple merchants to the whitelist in a single call.
     /// Admin-only. Duplicates are idempotent.
-    /// Returns the number of entries processed.
+    /// Returns the number of merchants **actually added**.
+    ///
+    /// Re-adding an already-whitelisted merchant is a no-op: no storage is
+    /// rewritten, no `merchant_added` event is emitted, and the entry does
+    /// not count toward the returned value (same event-suppression rule as
+    /// `freeze` / `unfreeze`, Issue #820). A batch of all-duplicates
+    /// therefore returns `0`.
     ///
     /// Capped at the configurable whitelist batch limit
     /// (`get_max_whitelist_batch_size`, default 50); panics with
@@ -1405,16 +1411,25 @@ impl FlowPay {
 
         whitelist::require_batch_within_limit(&env, merchants.len());
 
+        let mut added: u32 = 0;
         for merchant in merchants.iter() {
-            whitelist::add_merchant(&env, &merchant);
+            if whitelist::add_merchant(&env, &merchant) {
+                added += 1;
+            }
         }
 
-        merchants.len()
+        added
     }
 
     /// Removes multiple merchants from the whitelist in a single call.
     /// Admin-only. Removing a non-whitelisted merchant is a no-op.
-    /// Returns the number of entries processed.
+    /// Returns the number of merchants **actually removed**.
+    ///
+    /// Removing a merchant that is not currently whitelisted changes no
+    /// storage, emits no `merchant_removed` event, and does not count toward
+    /// the returned value (same event-suppression rule as `freeze` /
+    /// `unfreeze`, Issue #820). A batch of all non-whitelisted entries
+    /// therefore returns `0`.
     ///
     /// Capped at the configurable whitelist batch limit
     /// (`get_max_whitelist_batch_size`, default 50); panics with
@@ -1424,11 +1439,14 @@ impl FlowPay {
 
         whitelist::require_batch_within_limit(&env, merchants.len());
 
+        let mut removed: u32 = 0;
         for merchant in merchants.iter() {
-            whitelist::remove_merchant(&env, &merchant);
+            if whitelist::remove_merchant(&env, &merchant) {
+                removed += 1;
+            }
         }
 
-        merchants.len()
+        removed
     }
 
     /// Enables or disables the merchant whitelist.
