@@ -69,10 +69,18 @@ pub fn get_whitelist_size(env: &Env) -> u32 {
         .unwrap_or(0u32)
 }
 
-/// Adds a merchant to the whitelist. Idempotent.
-pub fn add_merchant(env: &Env, merchant: &Address) {
+/// Adds a merchant to the whitelist.
+///
+/// # Idempotency (Issue #1236)
+///
+/// If the merchant is already whitelisted, this is a no-op: no storage is
+/// written and no `merchant_added` event is emitted — the same event-suppression
+/// rule that `freeze` / `unfreeze` follow (Issue #820). Returns `true` when the
+/// merchant was actually added and `false` when the call was a no-op, so batch
+/// callers can count real state changes instead of entries processed.
+pub fn add_merchant(env: &Env, merchant: &Address) -> bool {
     if is_whitelisted(env, merchant) {
-        return;
+        return false;
     }
     let key = DataKey::MerchantWhitelist(merchant.clone());
     env.storage().persistent().set(&key, &true);
@@ -102,12 +110,22 @@ pub fn add_merchant(env: &Env, merchant: &Address) {
 
     merchant_stats::index_merchant(env, merchant);
     events::publish_merchant_added(env, merchant);
+    true
 }
 
-/// Removes a merchant from the whitelist. Idempotent.
-pub fn remove_merchant(env: &Env, merchant: &Address) {
+/// Removes a merchant from the whitelist.
+///
+/// # Idempotency (Issue #1236)
+///
+/// If the merchant is not currently whitelisted, this is a no-op: no storage
+/// is modified and no `merchant_removed` event is emitted — the same
+/// event-suppression rule that `freeze` / `unfreeze` follow (Issue #820).
+/// Returns `true` when the merchant was actually removed and `false` when the
+/// call was a no-op, so batch callers can count real state changes instead of
+/// entries processed.
+pub fn remove_merchant(env: &Env, merchant: &Address) -> bool {
     if !is_whitelisted(env, merchant) {
-        return;
+        return false;
     }
     env.storage()
         .persistent()
@@ -198,6 +216,7 @@ pub fn remove_merchant(env: &Env, merchant: &Address) {
 
     events::publish_merchant_removed(env, merchant);
     crate::fee::clear_merchant_fee_recipient(env, merchant);
+    true
 }
 
 /// Returns a paginated vector of whitelisted merchants.

@@ -14,7 +14,9 @@ import {
   scValToNative,
   xdr,
 } from "@stellar/stellar-sdk";
+import { MultiEndpointServer } from "./rpc-client.js";
 import { Server } from "@stellar/stellar-sdk/rpc";
+import { redactSecrets } from "./logger.js";
 import { logger as rootLogger } from "./logger.js";
 
 const logger = rootLogger.child({ script: "soroban-admin" });
@@ -74,8 +76,22 @@ export function loadSorobanConfig(
   return { contractId, rpcUrl, networkPassphrase, adminSecretKey };
 }
 
-export function createServer(config: Pick<SorobanConfig, "rpcUrl">): Server {
-  return new Server(config.rpcUrl);
+export function createServer(
+  config: Pick<SorobanConfig, "rpcUrl">,
+): MultiEndpointServer {
+  return new MultiEndpointServer(config.rpcUrl);
+}
+
+/**
+ * A copy of the config with the admin secret key masked, safe to log.
+ */
+export function redactSorobanConfig(config: SorobanConfig): SorobanConfig {
+  return {
+    ...config,
+    adminSecretKey: config.adminSecretKey
+      ? redactSecrets(config.adminSecretKey)
+      : "",
+  };
 }
 
 export function parseStellarAddress(address: string): Address {
@@ -102,7 +118,9 @@ export function vecAddressToScVal(addresses: string[]): xdr.ScVal {
   );
 }
 
-async function loadSimulationAccount(server: Server): Promise<Account> {
+async function loadSimulationAccount(
+  server: MultiEndpointServer,
+): Promise<Account> {
   try {
     return await server.getAccount(SIMULATION_SOURCE);
   } catch {
@@ -112,7 +130,7 @@ async function loadSimulationAccount(server: Server): Promise<Account> {
 
 export async function simulateRead(
   config: Pick<SorobanConfig, "contractId" | "networkPassphrase">,
-  server: Server,
+  server: MultiEndpointServer,
   method: string,
   args: xdr.ScVal[] = [],
 ): Promise<xdr.ScVal | null> {
@@ -137,7 +155,7 @@ export async function simulateRead(
 
 export async function readContractValue<T>(
   config: Pick<SorobanConfig, "contractId" | "networkPassphrase">,
-  server: Server,
+  server: MultiEndpointServer,
   method: string,
   args: xdr.ScVal[] = [],
   decode?: (value: xdr.ScVal | null) => T,
@@ -156,7 +174,7 @@ export async function readContractValue<T>(
 
 export async function invokeContract(
   config: SorobanConfig,
-  server: Server,
+  server: MultiEndpointServer,
   method: string,
   args: xdr.ScVal[] = [],
 ): Promise<TxResult> {
@@ -177,8 +195,10 @@ export async function invokeContract(
 
   const sendResult = await server.sendTransaction(tx);
   if (sendResult.errorResult) {
+    // The host error string is scrubbed before it becomes part of an Error
+    // message, so it can never carry secret material into a log line.
     throw new Error(
-      `Transaction submission failed for ${method}: ${sendResult.errorResult.toString()}`,
+      `Transaction submission failed for ${method}: ${redactSecrets(sendResult.errorResult.toString())}`,
     );
   }
 
@@ -197,7 +217,7 @@ export async function invokeContract(
 }
 
 export async function waitForTransaction(
-  server: Server,
+  server: MultiEndpointServer,
   hash: string,
 ): Promise<{ status: string }> {
   const startedAt = Date.now();
@@ -237,7 +257,9 @@ export async function retry<T>(
     }
   }
 
-  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  throw lastError instanceof Error
+    ? new Error(redactSecrets(lastError.message))
+    : new Error(redactSecrets(String(lastError)));
 }
 
 function sleep(ms: number): Promise<void> {
@@ -255,6 +277,9 @@ export async function runCommand(
   });
 
   if (stderr.trim()) {
+    // Child-process stderr is scrubbed too — a CLI invoked here may echo the
+    // admin secret back on failure.
+    console.error(redactSecrets(stderr.trim()));
     logger.warn("Command wrote to stderr", { command, stderr: stderr.trim() });
   }
 

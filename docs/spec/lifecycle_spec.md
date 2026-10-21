@@ -25,6 +25,10 @@ pub struct Subscription {
     pub active: bool,
     pub paused: bool,
     pub token: Address,
+    pub referrer: Option<Address>,
+    pub label: Symbol,
+    pub trial_duration: u64,
+    pub created_at: u64,
 }
 ```
 
@@ -494,7 +498,7 @@ sub.paused = false;
 **Effect:**
 
 - Completely overwrites the existing subscription struct
-- Resets all fields (`merchant`, `amount`, `interval`, `last_charged`, `active`, `paused`, `token`)
+- Resets all fields (`merchant`, `amount`, `interval`, `last_charged`, `active`, `paused`, `token`, `referrer`, `label`, `trial_duration`, `created_at`)
 - Does not modify `active_count` if previous subscription was active (no double-increment)
 
 **Use Case:**

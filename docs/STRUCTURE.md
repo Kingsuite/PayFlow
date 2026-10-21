@@ -217,6 +217,8 @@ deployments/
 
 ## `docs/`
 
+The task-oriented entry point for everything below is [docs/README.md](README.md).
+
 ```
 docs/
 ├── API.md
@@ -238,6 +240,7 @@ docs/
 ├── MERCHANT-INTEGRATION.md
 ├── MULTI-TOKEN.md
 ├── ONBOARDING.md
+├── README.md                # Documentation index — start here
 ├── REFERRAL.md              # Compatibility stub → REFERRALS.md
 ├── REFERRALS.md
 ├── SECURITY.md

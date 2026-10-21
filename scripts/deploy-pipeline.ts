@@ -356,8 +356,8 @@ main().catch((err) => {
   BASE_FEE,
   nativeToScVal,
 } from "@stellar/stellar-sdk";
-import { Server } from "@stellar/stellar-sdk/rpc";
 import { fileURLToPath } from "url";
+import { MultiEndpointServer } from "./rpc-client.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -477,7 +477,7 @@ export function computeWasmHash(wasmPath: string): string {
  */
 export async function fetchOnChainWasmHash(
   contractId: string,
-  server: Server
+  server: MultiEndpointServer
 ): Promise<string | null> {
   try {
     // Use getContractData or getLedgerEntries to read ContractCode
@@ -499,7 +499,7 @@ const LATEST_SCHEMA_VERSION = 2;
 
 export async function fetchSchemaVersion(
   contractId: string,
-  server: Server,
+  server: MultiEndpointServer,
   networkPassphrase: string,
   sourceAccount: string
 ): Promise<number | null> {
@@ -533,7 +533,7 @@ export async function fetchSchemaVersion(
  * Gate 1: RPC Health
  * Fails the pipeline if the Soroban RPC node reports unhealthy.
  */
-export async function runHealthGate(server: Server): Promise<GateResult> {
+export async function runHealthGate(server: MultiEndpointServer): Promise<GateResult> {
   try {
     const health = await server.getHealth();
     const healthy = (health as any).status === "healthy";
@@ -562,7 +562,7 @@ export async function runHealthGate(server: Server): Promise<GateResult> {
 export async function runWasmHashGate(
   wasmPath: string | undefined,
   contractId: string,
-  server: Server
+  server: MultiEndpointServer
 ): Promise<GateResult & { localHash: string | null; onChainHash: string | null }> {
   if (!wasmPath) {
     return {
@@ -621,7 +621,7 @@ export async function runWasmHashGate(
  */
 export async function runSchemaVersionGate(
   contractId: string,
-  server: Server,
+  server: MultiEndpointServer,
   networkPassphrase: string,
   sourceAccount: string
 ): Promise<GateResult & { schemaVersion: number | null }> {
@@ -719,7 +719,7 @@ export async function runPipeline(
     return summary;
   }
 
-  const server = new Server(rpcUrl);
+  const server = new MultiEndpointServer(rpcUrl);
 
   // ── Gate 1: RPC Health ─────────────────────────────────────────────────────
   const healthGate = await runHealthGate(server);

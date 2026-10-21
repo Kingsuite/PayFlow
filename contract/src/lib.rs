@@ -1395,7 +1395,13 @@ impl FlowPay {
 
     /// Adds multiple merchants to the whitelist in a single call.
     /// Admin-only. Duplicates are idempotent.
-    /// Returns the number of entries processed.
+    /// Returns the number of merchants **actually added**.
+    ///
+    /// Re-adding an already-whitelisted merchant is a no-op: no storage is
+    /// rewritten, no `merchant_added` event is emitted, and the entry does
+    /// not count toward the returned value (same event-suppression rule as
+    /// `freeze` / `unfreeze`, Issue #820). A batch of all-duplicates
+    /// therefore returns `0`.
     ///
     /// Capped at the configurable whitelist batch limit
     /// (`get_max_whitelist_batch_size`, default 50); panics with
@@ -1405,16 +1411,25 @@ impl FlowPay {
 
         whitelist::require_batch_within_limit(&env, merchants.len());
 
+        let mut added: u32 = 0;
         for merchant in merchants.iter() {
-            whitelist::add_merchant(&env, &merchant);
+            if whitelist::add_merchant(&env, &merchant) {
+                added += 1;
+            }
         }
 
-        merchants.len()
+        added
     }
 
     /// Removes multiple merchants from the whitelist in a single call.
     /// Admin-only. Removing a non-whitelisted merchant is a no-op.
-    /// Returns the number of entries processed.
+    /// Returns the number of merchants **actually removed**.
+    ///
+    /// Removing a merchant that is not currently whitelisted changes no
+    /// storage, emits no `merchant_removed` event, and does not count toward
+    /// the returned value (same event-suppression rule as `freeze` /
+    /// `unfreeze`, Issue #820). A batch of all non-whitelisted entries
+    /// therefore returns `0`.
     ///
     /// Capped at the configurable whitelist batch limit
     /// (`get_max_whitelist_batch_size`, default 50); panics with
@@ -1424,11 +1439,14 @@ impl FlowPay {
 
         whitelist::require_batch_within_limit(&env, merchants.len());
 
+        let mut removed: u32 = 0;
         for merchant in merchants.iter() {
-            whitelist::remove_merchant(&env, &merchant);
+            if whitelist::remove_merchant(&env, &merchant) {
+                removed += 1;
+            }
         }
 
-        merchants.len()
+        removed
     }
 
     /// Enables or disables the merchant whitelist.
@@ -1528,6 +1546,7 @@ impl FlowPay {
     }
 
     /// Prunes missing or expired daily revenue buckets safely. Admin only.
+    /// Panics with `BatchTooLarge` when `days` exceeds `MAX_PRUNE_REVENUE_DAYS`.
     pub fn prune_merchant_revenue_days(env: Env, merchant: Address, days: Vec<u64>) {
         let removed = days.len();
         merchant_stats::prune_merchant_revenue_days(&env, &merchant, days);
@@ -1911,13 +1930,16 @@ impl FlowPay {
         events::publish_merchant_withdrawal(&env, &merchant, amount);
     }
 
-    /// Returns per-charge revenue entries for the merchant (up to `days` most recent).
-    /// Oldest -> newest. Returns an empty Vec when no history has been recorded or after clearing.
+    /// Returns per-charge revenue entries for the merchant (up to `days` most recent,
+    /// from a history capped at `MAX_REVENUE_HISTORY` entries). Oldest -> newest.
+    /// Returns an empty Vec when no history has been recorded or after clearing.
     pub fn get_merchant_revenue_history(env: Env, merchant: Address, days: u32) -> Vec<i128> {
         merchant_stats::get_merchant_revenue_history(&env, &merchant, days)
     }
 
     /// Returns aggregate revenue statistics for a merchant: (total, count, min_charge, max_charge).
+    /// `total` is all-time; `count`/`min_charge`/`max_charge` cover the retained history
+    /// window (at most `MAX_REVENUE_HISTORY` most recent charges).
     pub fn get_merchant_revenue_summary(env: Env, merchant: Address) -> (i128, i128, i128, i128) {
         merchant_stats::get_merchant_revenue_summary(&env, &merchant)
     }
@@ -2033,9 +2055,6 @@ impl FlowPay {
     /// Stored in temporary storage; resets automatically after ~1 day.
     pub fn set_daily_limit(env: Env, user: Address, limit: i128) {
         user.require_auth();
-        if limit <= 0 {
-            env.panic_with_error(ContractError::AmountMustBePositive);
-        }
         spending_limit::set_daily_limit(&env, &user, limit);
         events::publish_daily_limit_set(&env, &user, limit);
     }
@@ -2628,8 +2647,7 @@ fn subscribe_inner(
     validation::require_valid_amount(env, amount);
     validation::validate_interval(env, interval);
 
-    use soroban_sdk::xdr::ToXdr;
-    if token.clone().to_xdr(env).get(7) == Some(0) {
+    if !validation::is_contract_address(&token) {
         env.panic_with_error(ContractError::InvalidTokenAddress);
     }
 

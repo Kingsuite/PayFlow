@@ -19,7 +19,7 @@
 
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { Server } from "@stellar/stellar-sdk/rpc";
+import { MultiEndpointServer } from "./rpc-client.js";
 import {
   appendJsonLine,
   addressToScVal,
@@ -101,7 +101,7 @@ async function loadBatchAddresses(csvPath: string): Promise<string[]> {
     .filter((value) => value.toLowerCase() !== "address");
 }
 
-async function isMerchantFrozen(config: SorobanConfig, server: Server, address: string): Promise<boolean> {
+async function isMerchantFrozen(config: SorobanConfig, server: MultiEndpointServer, address: string): Promise<boolean> {
   return readContractValue<boolean>(
     config,
     server,
@@ -111,7 +111,7 @@ async function isMerchantFrozen(config: SorobanConfig, server: Server, address: 
   );
 }
 
-async function isMerchantWhitelisted(config: SorobanConfig, server: Server, address: string): Promise<boolean> {
+async function isMerchantWhitelisted(config: SorobanConfig, server: MultiEndpointServer, address: string): Promise<boolean> {
   return readContractValue<boolean>(
     config,
     server,
@@ -173,7 +173,7 @@ export function buildWhitelistBatchArgs(address: string) {
 
 export async function onboardMerchant(
   config: SorobanConfig,
-  server: Server,
+  server: MultiEndpointServer,
   address: string,
   options: OnboardOptions = {},
 ): Promise<MerchantOutcome> {
