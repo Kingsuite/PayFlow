@@ -33,16 +33,14 @@ import {
   xdr,
   scValToNative,
 } from "@stellar/stellar-sdk";
+import { MultiEndpointServer } from "./rpc-client.js";
 import { Server } from "@stellar/stellar-sdk/rpc";
+import { fileURLToPath } from "node:url";
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
 const CONTRACT_ID =
   process.env.CONTRACT_ID ?? process.env.VITE_CONTRACT_ID ?? "";
-const RPC_URL =
-  process.env.RPC_URL ??
-  process.env.VITE_RPC_URL ??
-  "https://soroban-testnet.stellar.org";
 const NETWORK_PASSPHRASE =
   process.env.NETWORK_PASSPHRASE ??
   process.env.VITE_NETWORK_PASSPHRASE ??
@@ -137,7 +135,7 @@ Environment:
 
 // ── Contract helpers ─────────────────────────────────────────────────────────
 
-const server = new Server(RPC_URL);
+const server = new MultiEndpointServer();
 
 function addressVal(addr: string): xdr.ScVal {
   return nativeToScVal(Address.fromString(addr), { type: "address" });
@@ -509,9 +507,9 @@ async function main(): Promise<void> {
   }
 }
 
-const isDirectRun =
-  process.argv[1]?.endsWith("batch-optimizer.ts") ||
-  process.argv[1]?.endsWith("batch-optimizer.js");
+// ESM entrypoint guard: only auto-run when executed directly, not when
+// imported (e.g. by keeper.ts / replay-dlq.ts, which reuse buildOptimizedBatches).
+const isDirectRun = process.argv[1] === fileURLToPath(import.meta.url);
 
 if (isDirectRun) {
   main().catch((err) => {

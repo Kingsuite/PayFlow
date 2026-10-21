@@ -1,6 +1,6 @@
 use soroban_sdk::{Address, Env};
 
-use crate::{DataKey, DailyLimitStatus};
+use crate::{DailyLimitStatus, DataKey};
 
 /// Approximate number of ledgers in one day.
 /// Stellar closes ~1 ledger every 5 seconds → 17,280 ledgers/day.
@@ -24,6 +24,16 @@ pub fn set_daily_limit(env: &Env, user: &Address, limit: i128) {
 }
 
 /// Removes the daily spending limit for a user.
+///
+/// Clears `DailyLimit`, `DailySpent`, and `DayStart` together. Because
+/// `get_daily_spent` returns 0 whenever `DayStart` is absent, removing the
+/// limit and then re-setting it starts a **fresh window**: the spend counter
+/// and the day-start anchor are both discarded. This is intentional — it is
+/// the supported way for a user to reset their daily tracking early (e.g.
+/// after lowering and re-raising the cap) without waiting for TTL expiry.
+///
+/// Raising a limit with `set_daily_limit` alone does *not* clear
+/// `DailySpent` / `DayStart`; only removal does.
 pub fn remove_daily_limit(env: &Env, user: &Address) {
     env.storage()
         .temporary()

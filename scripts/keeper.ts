@@ -1261,7 +1261,14 @@ async function main(): Promise<void> {
   if (once) {
     const report = await runCycle();
     incrementCycles();
-    process.exit(report.errors.length > 0 && report.totalCharged === 0 ? 1 : 0);
+    // Exit 1 only when the cycle could not run at all (no subscribers were
+    // even checked AND errors occurred).  A cycle that ran but charged nothing
+    // because nothing was due is a normal, successful outcome (exit 0).
+    // Per-subscriber failures are recorded in the DLQ and surfaced via
+    // metrics — they do not change the exit code.
+    const cycleFailure = report.errors.length > 0 && report.totalChecked === 0;
+    await stopMetricsServer();
+    process.exit(cycleFailure ? 1 : 0);
   }
 
   let shutdown = false;

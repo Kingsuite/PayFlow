@@ -55,6 +55,7 @@ import {
 } from "@stellar/stellar-sdk";
 import { Server } from "@stellar/stellar-sdk/rpc";
 import { logger, redactSecrets } from "./logger.js";
+import { MultiEndpointServer } from "./rpc-client.js";
 
 const RPC_URL =
   process.env.RPC_URL ||
@@ -200,7 +201,7 @@ function getBenchmarkSubscribers(
 }
 
 async function getBenchmarkSourceAccount(
-  server: Server,
+  server: MultiEndpointServer,
   secretKey: string,
 ): Promise<Keypair> {
   if (secretKey) {
@@ -212,7 +213,7 @@ async function getBenchmarkSourceAccount(
 }
 
 async function runBenchmarkIteration(
-  server: Server,
+  server: MultiEndpointServer,
   signerKp: Keypair,
   subscribers: FixtureSubscriber[],
   simulate: boolean,
@@ -366,7 +367,7 @@ async function main() {
   );
   logger.info(`====================================================\n`);
 
-  const server = new Server(RPC_URL);
+  const server = new MultiEndpointServer();
   const signerKp = await getBenchmarkSourceAccount(server, SECRET_KEY);
 
   const batchResults: BatchBenchmarkResult[] = [];
