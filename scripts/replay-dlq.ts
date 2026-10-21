@@ -57,7 +57,8 @@ import {
   xdr,
   Address,
 } from "@stellar/stellar-sdk";
-import { Server, assembleTransaction } from "@stellar/stellar-sdk/rpc";
+import { assembleTransaction } from "@stellar/stellar-sdk/rpc";
+import { MultiEndpointServer } from "./rpc-client.js";
 import {
   existsSync,
   readFileSync,
@@ -75,7 +76,6 @@ const logger = rootLogger.child({ script: "replay-dlq" });
 
 const CONTRACT_ID = process.env.CONTRACT_ID ?? "";
 const KEEPER_SECRET = process.env.KEEPER_SECRET ?? "";
-const RPC_URL = process.env.RPC_URL ?? "https://soroban-testnet.stellar.org";
 const NETWORK_PASSPHRASE = (process.env.NETWORK_PASSPHRASE ??
   Networks.TESTNET) as string;
 const KEEPER_MAX_RETRIES = parseInt(process.env.KEEPER_MAX_RETRIES ?? "3", 10);
@@ -179,7 +179,7 @@ function parseChargeResults(retval: xdr.ScVal): {
 }
 
 async function replayEntry(
-  server: Server,
+  server: MultiEndpointServer,
   contract: Contract,
   keypair: Keypair,
   entry: DlqEntry,
@@ -338,7 +338,7 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  const server = new Server(RPC_URL);
+  const server = new MultiEndpointServer();
   const contract = new Contract(CONTRACT_ID);
 
   let replayed = 0;

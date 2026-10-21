@@ -14,6 +14,7 @@ import {
   scValToNative,
   xdr,
 } from "@stellar/stellar-sdk";
+import { MultiEndpointServer } from "./rpc-client.js";
 import { Server } from "@stellar/stellar-sdk/rpc";
 import { logger as rootLogger } from "./logger.js";
 
@@ -74,8 +75,10 @@ export function loadSorobanConfig(
   return { contractId, rpcUrl, networkPassphrase, adminSecretKey };
 }
 
-export function createServer(config: Pick<SorobanConfig, "rpcUrl">): Server {
-  return new Server(config.rpcUrl);
+export function createServer(
+  config: Pick<SorobanConfig, "rpcUrl">,
+): MultiEndpointServer {
+  return new MultiEndpointServer(config.rpcUrl);
 }
 
 export function parseStellarAddress(address: string): Address {
@@ -102,7 +105,9 @@ export function vecAddressToScVal(addresses: string[]): xdr.ScVal {
   );
 }
 
-async function loadSimulationAccount(server: Server): Promise<Account> {
+async function loadSimulationAccount(
+  server: MultiEndpointServer,
+): Promise<Account> {
   try {
     return await server.getAccount(SIMULATION_SOURCE);
   } catch {
@@ -112,7 +117,7 @@ async function loadSimulationAccount(server: Server): Promise<Account> {
 
 export async function simulateRead(
   config: Pick<SorobanConfig, "contractId" | "networkPassphrase">,
-  server: Server,
+  server: MultiEndpointServer,
   method: string,
   args: xdr.ScVal[] = [],
 ): Promise<xdr.ScVal | null> {
@@ -137,7 +142,7 @@ export async function simulateRead(
 
 export async function readContractValue<T>(
   config: Pick<SorobanConfig, "contractId" | "networkPassphrase">,
-  server: Server,
+  server: MultiEndpointServer,
   method: string,
   args: xdr.ScVal[] = [],
   decode?: (value: xdr.ScVal | null) => T,
@@ -156,7 +161,7 @@ export async function readContractValue<T>(
 
 export async function invokeContract(
   config: SorobanConfig,
-  server: Server,
+  server: MultiEndpointServer,
   method: string,
   args: xdr.ScVal[] = [],
 ): Promise<TxResult> {
@@ -197,7 +202,7 @@ export async function invokeContract(
 }
 
 export async function waitForTransaction(
-  server: Server,
+  server: MultiEndpointServer,
   hash: string,
 ): Promise<{ status: string }> {
   const startedAt = Date.now();
