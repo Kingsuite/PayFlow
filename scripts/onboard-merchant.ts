@@ -308,10 +308,7 @@ async function main(): Promise<void> {
   }
 }
 
-const isEntry = process.argv[1] && (
-  process.argv[1] === fileURLToPath(import.meta.url) ||
-  process.argv[1].replace(/\\/g, "/").endsWith("scripts/onboard-merchant.ts")
-);
+const isEntry = process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url);
 
 if (isEntry) {
   main().catch((error) => {

@@ -252,7 +252,13 @@ export default function SubscribeForm({
 
       {/* Amount Field */}
       <div data-testid="amount-wrapper" onBlur={() => handleBlur("amount")}>
-        <StroopInput label="Amount" onChange={setAmountStroops} disabled={pending || isPaused} />
+        <StroopInput
+          label="Amount"
+          onChange={setAmountStroops}
+          disabled={pending || isPaused}
+          isInvalid={Boolean(amountError)}
+          ariaDescribedBy={amountError ? "amount-error" : undefined}
+        />
         {amountError && (
           <span
             id="amount-error"
@@ -266,12 +272,14 @@ export default function SubscribeForm({
       </div>
 
       {/* Interval Field */}
-      <div data-testid="interval-wrapper" tabIndex={-1} onBlur={() => handleBlur("interval")}>
+      <div data-testid="interval-wrapper" onBlur={() => handleBlur("interval")}>
         <IntervalSelector
+          id="interval-select"
           value={interval}
           onChange={(seconds) => {
             setInterval(seconds);
           }}
+          onBlur={() => handleBlur("interval")}
         />
         {intervalError && (
           <span

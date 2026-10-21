@@ -353,7 +353,7 @@ Options:
 }
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
-if (isMain || process.argv[1]?.includes("pre-upgrade-check")) {
+if (isMain) {
   main().catch((err) => {
     console.error(err);
     process.exit(1);

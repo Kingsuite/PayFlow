@@ -223,6 +223,7 @@ export default function SubscriptionCard({
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const [cancelLoading, setCancelLoading] = useState(false);
   const [cancelStatus, setCancelStatus] = useState("");
+  const [cancelError, setCancelError] = useState<string | null>(null);
 
   // ── Pause / resume via hook ────────────────────────────────────────────────
   const [showPauseConfirm, setShowPauseConfirm] = useState(false);
@@ -355,12 +356,14 @@ export default function SubscriptionCard({
         { active: false }
       );
       setCancelStatus("Cancelled successfully.");
+      setCancelError(null);
       setShowCancelConfirm(false);
       onCancelled?.();
     } catch (e: unknown) {
-      const msg = `Error: ${e instanceof Error ? e.message : String(e)}`;
+      const msg = e instanceof Error ? e.message : String(e);
+      setCancelError(msg);
       setCancelStatus(msg);
-      addToast(msg, "error");
+      addToast(`Error: ${msg}`, "error");
     } finally {
       cancelSubmittingRef.current = false;
       setCancelLoading(false);
@@ -424,15 +427,15 @@ export default function SubscriptionCard({
       ? `Paused until ${new Date(scheduledResumeAt * 1000).toLocaleString()}.`
       : "Paused successfully.";
   } else if (pauseTx.state === "failed") {
-    derivedPauseStatus = `Error: ${pauseTx.error || "Failed to pause"}`;
+    derivedPauseStatus = pauseTx.error || "Failed to pause";
   } else if (pauseUntilTx.state === "failed") {
-    derivedPauseStatus = `Error: ${pauseUntilTx.error || "Failed to pause"}`;
+    derivedPauseStatus = pauseUntilTx.error || "Failed to pause";
   } else if (resumeTx.state === "pending") {
     derivedPauseStatus = "Resuming…";
   } else if (resumeTx.state === "success") {
     derivedPauseStatus = "Resumed successfully.";
   } else if (resumeTx.state === "failed") {
-    derivedPauseStatus = `Error: ${resumeTx.error || "Failed to resume"}`;
+    derivedPauseStatus = resumeTx.error || "Failed to resume";
   }
 
   const isInTrial = trialEndTimestamp !== null && trialEndTimestamp > Math.floor(Date.now() / 1000);
@@ -747,35 +750,43 @@ export default function SubscriptionCard({
         />
       )}
 
-      {(derivedPauseStatus || cancelStatus) && (
-        <p
-          className="form-status"
-          style={{
-            color:
-              derivedPauseStatus.startsWith("Error") || cancelStatus.startsWith("Error")
-                ? "var(--color-danger)"
-                : "var(--color-success)",
-          }}
-        >
-          {derivedPauseStatus || cancelStatus}
-        </p>
-      )}
+      {(() => {
+        const hasPauseError =
+          pauseTx.state === "failed" || pauseUntilTx.state === "failed" || resumeTx.state === "failed";
+        const pauseErrorMsg = pauseTx.error || pauseUntilTx.error || resumeTx.error;
+        const isError = hasPauseError || cancelError !== null;
+        const displayStatus = hasPauseError ? derivedPauseStatus : (cancelStatus || derivedPauseStatus);
+        const activeError = hasPauseError ? pauseErrorMsg : cancelError;
 
-      {(derivedPauseStatus.startsWith("Error") || cancelStatus.startsWith("Error")) && (
-        <ErrorRecovery
-          error={
-            derivedPauseStatus.startsWith("Error")
-              ? pauseTx.error || pauseUntilTx.error || resumeTx.error
-              : cancelStatus
-          }
-          health={subHealth}
-          onIncreaseAllowance={
-            subHealth && !subHealth.has_sufficient_allowance
-              ? () => setShowAllowanceModal(true)
-              : undefined
-          }
-        />
-      )}
+        if (!displayStatus) return null;
+
+        return (
+          <>
+            <p
+              className={`form-status ${isError ? "text-error" : "text-success"}`}
+              role="status"
+              data-testid="subscription-card-status"
+              style={{
+                color: isError ? "var(--color-danger)" : "var(--color-success)",
+              }}
+            >
+              {isError ? `⚠️ ${displayStatus}` : displayStatus}
+            </p>
+
+            {isError && (
+              <ErrorRecovery
+                error={activeError || displayStatus}
+                health={subHealth}
+                onIncreaseAllowance={
+                  subHealth && !subHealth.has_sufficient_allowance
+                    ? () => setShowAllowanceModal(true)
+                    : undefined
+                }
+              />
+            )}
+          </>
+        );
+      })()}
     </div>
   );
 }

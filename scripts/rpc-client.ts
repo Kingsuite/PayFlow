@@ -9,6 +9,9 @@ import {
 } from "@stellar/stellar-sdk";
 import { Server, Durability, Api } from "@stellar/stellar-sdk/rpc";
 import { incrementRpcFailovers } from "./metrics-server";
+import { logger as rootLogger } from "./logger.js";
+
+const logger = rootLogger.child({ script: "rpc-client" });
 
 /** Default HTTP timeout for every Soroban RPC request (milliseconds). */
 export const DEFAULT_RPC_TIMEOUT_MS = 30_000;
@@ -322,18 +325,19 @@ export class MultiEndpointServer {
           `getNetwork ${endpoint.url}`,
         );
         if (networkInfo.passphrase !== this.expectedPassphrase) {
-          console.error(
-            `[RPC Failover] Network passphrase mismatch for ${endpoint.url}. ` +
-              `Expected "${this.expectedPassphrase}", got "${networkInfo.passphrase}".`,
-          );
+          logger.error("Network passphrase mismatch — endpoint demoted", {
+            url: endpoint.url,
+            expected: this.expectedPassphrase,
+            got: networkInfo.passphrase,
+          });
           endpoint.isHealthy = false;
           endpoint.errorCount = 999; // Heavily deprioritize
         }
       } catch (err: any) {
-        console.warn(
-          `[RPC Failover] Health check/passphrase validation failed for ${endpoint.url}: ${err?.message || err}. ` +
-            `Demoting this endpoint.`,
-        );
+        logger.warn("Health check / passphrase validation failed — endpoint demoted", {
+          url: endpoint.url,
+          error: err?.message ?? String(err),
+        });
         endpoint.isHealthy = false;
         endpoint.errorCount++;
       }
@@ -417,6 +421,12 @@ export class MultiEndpointServer {
           `[RPC Failover] Endpoint ${failedUrl} failed after a possible submit: ${lastError?.message || lastError}. Not retrying sendTransaction.`,
         );
         throw lastError || new Error("RPC submit failed.");
+        logger.warn("RPC endpoint failed — failing over", {
+          failed_url: failedUrl,
+          next_url: nextUrl,
+          error: err?.message ?? String(err),
+        });
+        incrementRpcFailovers();
       }
 
       this.sortEndpoints();
@@ -723,7 +733,7 @@ export async function fetchEventsFromRpc(): Promise<ParsedRpcEvent[]> {
     try {
       response = await server.getEvents(params);
     } catch (err: any) {
-      console.error(`Error querying RPC events: ${err?.message || err}`);
+      logger.error("Error querying RPC events", { error: err?.message ?? String(err) });
       throw err;
     }
 
