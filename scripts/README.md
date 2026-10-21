@@ -940,7 +940,7 @@ Every script in this directory falls into one of three categories:
 | --- | --- | --- |
 | ScVal encoding/decoding | `lib/scval-helpers.ts` | Soroban Value (ScVal) serialization helpers for contract interaction |
 | Structured logging | `logger.ts` | JSON/human log formatter with child context binding |
-| Configuration parsing | `config.ts` | Zod schema for env vars, deprecation alias handling (`KEEPER_SECRET`→`SECRET_KEY`, `NETWORK_PASSTHRASE`→`NETWORK_PASSPHRASE`) |
+| Configuration parsing | `config.ts` | Zod schema for env vars, deprecation alias handling (`KEEPER_SECRET`→`SECRET_KEY`, `NETWORK_PASSTHRASE`→`NETWORK_PASSPHRASE`), mainnet gate (`ALLOW_MAINNET`), `redactSecret`, signer/`KEEPER_PUBLIC_KEY` match check |
 | RPC client with failover | `rpc-client.ts` | Multi-endpoint RPC client (`RPC_URLS`) |
 | Dry-run statistics | `lib/dry-run-stats.ts` | Aggregation of `ChargeResult` pages for keeper dry-run reports |
 | Forecasting utilities | `lib/forecast.ts` | Renewal forecasting math |

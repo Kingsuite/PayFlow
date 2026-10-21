@@ -197,7 +197,7 @@ npx tsx scripts/snapshot-diff.ts before.json after.json
 
 ### `ALLOW_MAINNET` and network authorization
 
-**This repository does not implement an `ALLOW_MAINNET` environment variable or deploy-time guard.** Network selection is a manual operator control:
+**`scripts/keeper.ts` implements an `ALLOW_MAINNET` runtime gate; there is no deploy-time guard.** The keeper refuses to start when `NETWORK_PASSPHRASE` is the mainnet passphrase unless `ALLOW_MAINNET=true`. Otherwise, network selection is a manual operator control:
 
 - Soroban CLI `--network mainnet`
 - `scripts/health-check.ts`: `NETWORK=mainnet` selects `Networks.PUBLIC`
@@ -419,7 +419,7 @@ Further recovery guidance: [`DEPLOYMENT.md`](DEPLOYMENT.md#rollback-procedure) (
 Do not deposit or route real Mainnet funds until every item is checked.
 
 - [ ] **Audit approval** — independent audit complete; remediations merged; report published ([`SECURITY.md`](../SECURITY.md))
-- [ ] **Correct network** — CLI `--network mainnet`, passphrase `Public Global Stellar Network ; September 2015`, Mainnet RPC, Mainnet SAC, Mainnet contract ID (no `ALLOW_MAINNET` flag exists; confirm manually)
+- [ ] **Correct network** — CLI `--network mainnet`, passphrase `Public Global Stellar Network ; September 2015`, Mainnet RPC, Mainnet SAC, Mainnet contract ID (the deploy CLI has no `ALLOW_MAINNET` flag — confirm manually; the keeper's runtime gate requires `ALLOW_MAINNET=true`)
 - [ ] **Fee bounds** — `get_fee_bounds` matches policy; current `get_fee` is inside bounds
 - [ ] **Volume cap** — `get_global_volume_cap` / `get_global_volume_window` recorded; operators understand compile-time enforcement of `GLOBAL_MAX_VOLUME_PER_HOUR`
 - [ ] **Contract health** — `contract_health_check` `is_healthy`; `scripts/health-check.ts` exit 0; not paused; token + admin set

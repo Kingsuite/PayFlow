@@ -72,6 +72,7 @@ Many scripts accept a `VITE_`-prefixed fallback (`VITE_CONTRACT_ID`, `VITE_RPC_U
 | `WEBHOOK_SECRET` | No | string | Non-empty if provided | alert-expiring-allowances, alert-failed-charges | HMAC-SHA256 signing key for webhooks |
 | `WEBHOOK_DLQ_FILE` | No | string | File path | alert-expiring-allowances, alert-failed-charges | Dead-letter queue for failed webhooks |
 | `NETWORK_PASSPHRASE` | No | string | Default: `Test SDF Network ; September 2015` | keeper, check-allowances | Stellar network passphrase |
+| `ALLOW_MAINNET` | No | boolean | `"true"` required to use the mainnet passphrase; default `false` | keeper | Mainnet safety gate — startup fails if the mainnet passphrase is selected without it |
 | `DRY_RUN` | No | boolean | `"true"` enables; default `false` | keeper | Simulation mode (no live submissions) |
 | `KEEPER_USE_LEGACY_PAGING` | No | boolean | `"true"` enables; default `false` | keeper | Use legacy sequential paging |
 | `LOG_LEVEL` | No | string | `debug` \| `info` \| `warn` \| `error`; default `info` | keeper, indexer, health-check, alert-failed-charges | Log verbosity |
@@ -191,6 +192,45 @@ Docker runtime only (set in [`scripts/Dockerfile`](../scripts/Dockerfile), not r
 
 | Variable | Notes |
 | --- | --- |
+| `keeper.ts` | `CONTRACT_ID`, `RPC_URL`, `RPC_URLS`, `SECRET_KEY`/`KEEPER_SECRET`, `KEEPER_PUBLIC_KEY`, `DRY_RUN`, `BATCH_SIZE`, `INTERVAL_SECONDS`, `KEEPER_USE_LEGACY_PAGING`, `NETWORK_PASSPHRASE`/`NETWORK_PASSTHRASE`, `ALLOW_MAINNET`, `LOG_LEVEL`, `LOG_FORMAT`, `REPORT_DIR`, `WEBHOOK_URL`, `WEBHOOK_SECRET`, `WEBHOOK_DLQ_FILE`, `ALERT_WINDOW_LEDGERS` |
+| `indexer.ts` | `CONTRACT_ID`, `RPC_URL`, `RPC_URLS`, `DATA_DIR`, `DB_FILE`, `POLL_INTERVAL_MS`, `START_LEDGER`, `LOG_LEVEL`, `LOG_FORMAT` |
+| `metrics-server.ts` | `METRICS_PORT` |
+| `deploy-pipeline.ts` | `CONTRACT_ID`, `RPC_URL`, `SOROBAN_SOURCE_ACCOUNT`, `NETWORK_PASSPHRASE` |
+| `pre-upgrade-check.ts` | `CONTRACT_ID`, `RPC_URL`, `SOROBAN_SOURCE_ACCOUNT`, `NETWORK_PASSPHRASE` |
+| `top-merchants.ts` | `CONTRACT_ID`, `RPC_URL`, `SOROBAN_SOURCE_ACCOUNT`, `NETWORK_PASSPHRASE` |
+| `check-allowances.ts` | `CONTRACT_ID`, `RPC_URL`, `NETWORK_PASSPHRASE`, `KEEPER_PUBLIC_KEY` |
+| `alert-expiring-allowances.ts` | `CONTRACT_ID`, `RPC_URL`, `NETWORK_PASSPHRASE`, `KEEPER_PUBLIC_KEY`, `WEBHOOK_URL`, `WEBHOOK_SECRET`, `ALERT_WINDOW_LEDGERS` |
+| `health-check.ts` | `CONTRACT_ID`, `RPC_URL`, `NETWORK_PASSPHRASE`, `HEALTH_DEEP` |
+| `subscription-snapshot.ts` | `CONTRACT_ID`, `RPC_URL`, `SOROBAN_SOURCE_ACCOUNT` |
+| `daily-revenue-summary.ts` | `CONTRACT_ID`, `RPC_URL`, `SOROBAN_SOURCE_ACCOUNT`, `WEBHOOK_URL`, `SLACK_WEBHOOK_URL` |
+| `export-merchant-report.ts` | `CONTRACT_ID`, `RPC_URL`, `SOROBAN_SOURCE_ACCOUNT` |
+| `watch-events.ts` | `CONTRACT_ID`, `RPC_URL`, `NETWORK_PASSPHRASE` |
+| `query-events.ts` | `CONTRACT_ID`, `DATA_DIR`, `DB_FILE` |
+| `backup-indexer-db.ts` | `DATA_DIR`, `DB_FILE`, `BACKUP_DIR` |
+| `replay-dlq.ts` | `CONTRACT_ID`, `RPC_URL`, `SECRET_KEY`/`KEEPER_SECRET`, `KEEPER_PUBLIC_KEY`, `DLQ_FILE` |
+| `replay-events.ts` | `CONTRACT_ID`, `RPC_URL`, `SOROBAN_SOURCE_ACCOUNT`, `START_LEDGER` |
+| `rotate-fee-collector.ts` | `CONTRACT_ID`, `RPC_URL`, `SECRET_KEY`/`KEEPER_SECRET`, `KEEPER_PUBLIC_KEY` |
+| `migrate-contract.ts` | `CONTRACT_ID`, `RPC_URL`, `SECRET_KEY`/`KEEPER_SECRET`, `KEEPER_PUBLIC_KEY` |
+| `onboard-merchant.ts` | `CONTRACT_ID`, `RPC_URL`, `SECRET_KEY`/`KEEPER_SECRET`, `KEEPER_PUBLIC_KEY` |
+| `grace-period-monitor.ts` | `CONTRACT_ID`, `RPC_URL`, `SOROBAN_SOURCE_ACCOUNT` |
+| `alert-failed-charges.ts` | `CONTRACT_ID`, `RPC_URL`, `SECRET_KEY`/`KEEPER_SECRET`, `KEEPER_PUBLIC_KEY`, `WEBHOOK_URL`, `WEBHOOK_SECRET` |
+| `batch-optimizer.ts` | `CONTRACT_ID`, `RPC_URL`, `SOROBAN_SOURCE_ACCOUNT` |
+| `churn-analysis.ts` | `CONTRACT_ID`, `RPC_URL`, `SOROBAN_SOURCE_ACCOUNT` |
+| `merchant-analytics.ts` | `CONTRACT_ID`, `RPC_URL`, `SOROBAN_SOURCE_ACCOUNT` |
+| `subscriber-churn-report.ts` | `CONTRACT_ID`, `RPC_URL`, `SOROBAN_SOURCE_ACCOUNT` |
+| `subscriber-health-dashboard.ts` | `CONTRACT_ID`, `RPC_URL`, `NETWORK_PASSPHRASE`, `PAGE_SIZE`, `LEDGER_ENTRY_BATCH`, `EXPIRING_TTL_LEDGERS`, `PROGRESS` |
+| `topup-allowance.ts` | `CONTRACT_ID`, `RPC_URL`, `SECRET_KEY`/`KEEPER_SECRET`, `KEEPER_PUBLIC_KEY` |
+| `fee-revenue-report.ts` | `CONTRACT_ID`, `RPC_URL`, `SOROBAN_SOURCE_ACCOUNT` |
+| `audit-trail.ts` | `CONTRACT_ID`, `RPC_URL`, `SOROBAN_SOURCE_ACCOUNT` |
+| `snapshot-diff.ts` | `CONTRACT_ID`, `RPC_URL`, `SOROBAN_SOURCE_ACCOUNT` |
+| `renewal-forecast.ts` | `CONTRACT_ID`, `RPC_URL`, `SOROBAN_SOURCE_ACCOUNT` |
+| `testnet-setup.ts` | `CONTRACT_ID`, `RPC_URL`, `SECRET_KEY`/`KEEPER_SECRET`, `KEEPER_PUBLIC_KEY` |
+| `validate-config.ts` | All canonical variables (validates `.env`) |
+| `soroban-admin.ts` | `CONTRACT_ID`, `RPC_URL`, `SECRET_KEY`/`KEEPER_SECRET`, `KEEPER_PUBLIC_KEY` |
+
+## Validation Test
+
+A parity test exists at [`scripts/config.test.ts`](../scripts/config.test.ts) that validates:
 | `CHARGE_INTERVAL_MS` | Appeared in older `.env.example` files; use `INTERVAL_SECONDS` |
 
 ## Script-to-variable matrix

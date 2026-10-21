@@ -22,7 +22,6 @@
     "keeper": "tsx keeper.ts",
     "watch-events": "tsx watch-events.ts",
     "check-allowances": "tsx check-allowances.ts",
-    "typecheck:esm": "tsc --noEmit"
     "alert-expiring-allowances": "tsx alert-expiring-allowances.ts",
     "batch-optimizer": "tsx batch-optimizer.ts",
     "pre-upgrade-check": "tsx pre-upgrade-check.ts",

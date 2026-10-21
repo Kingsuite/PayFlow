@@ -79,7 +79,10 @@ import {
   ConfigSchema,
   formatConfigErrors,
   logDeprecationWarnings,
+  mainnetGateError,
   normalizeEnv,
+  publicKeyMismatchError,
+  redactSecret,
 } from "./config.js";
 import {
   addPageTally,
@@ -180,6 +183,29 @@ function validateEnv(): void {
     errors.push("✗ KEEPER_PUBLIC_KEY: KEEPER_PUBLIC_KEY is required");
   }
 
+  // Signer sanity check (ported from the retired root keeper-config.ts):
+  // a KEEPER_PUBLIC_KEY that does not match the signing secret is caught at
+  // startup instead of at transaction signing time.
+  const mismatch = publicKeyMismatchError(
+    normalizedEnv.SECRET_KEY,
+    KEEPER_PUBLIC_KEY,
+  );
+  if (mismatch) {
+    errors.push(`✗ KEEPER_PUBLIC_KEY: ${mismatch}`);
+  }
+
+  // Mainnet safeguard (ported from the retired root keeper-config.ts):
+  // the public-network passphrase requires an explicit ALLOW_MAINNET=true.
+  // The normalized env is used so the deprecated NETWORK_PASSTHRASE alias is
+  // covered by the gate too.
+  const gateError = mainnetGateError(
+    normalizedEnv.NETWORK_PASSPHRASE ?? NETWORK_PASSPHRASE,
+    normalizedEnv.ALLOW_MAINNET === "true",
+  );
+  if (gateError) {
+    errors.push(`✗ ALLOW_MAINNET: ${gateError}`);
+  }
+
   if (errors.length > 0) {
     console.error("Error: Invalid keeper configuration:");
     for (const err of errors) console.error(`  - ${err}`);
@@ -214,6 +240,9 @@ Environment Variables:
   DRY_RUN               Set to "true" for dry-run simulation mode (no transactions submitted).
   RPC_URL               Optional. Soroban RPC endpoint (default: testnet).
   NETWORK_PASSPHRASE    Optional. Network passphrase (default: Testnet).
+  ALLOW_MAINNET         Set to "true" to confirm mainnet use. Startup fails if
+                        NETWORK_PASSPHRASE is the mainnet passphrase and this
+                        is not "true".
   BATCH_SIZE            Optional. Subscribers per page for legacy paging
                         (default: on-chain max via get_max_batch_size,
                         falling back to 50). Always clamped to the live
@@ -1253,6 +1282,15 @@ async function main(): Promise<void> {
   } else {
     logger.info("Keeper started in LIVE mode", { mode: "live" });
   }
+
+  // Startup configuration summary — the secret is always redacted
+  // (redactSecret ported from the retired root keeper-config.ts).
+  logger.info("Keeper configuration", {
+    network: NETWORK_PASSPHRASE,
+    allowMainnet: process.env.ALLOW_MAINNET === "true",
+    secret: KEEPER_SECRET ? redactSecret(KEEPER_SECRET) : "(unset)",
+    publicKey: KEEPER_PUBLIC_KEY,
+  });
 
   startMetricsServer();
   BATCH_SIZE = await resolveBatchSize();
