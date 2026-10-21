@@ -34,7 +34,7 @@ Use the [quick-reference table](#quick-reference-table) for lookups, then jump t
 | 18   | `ContractPaused`            | State        | Op while protocol paused           |
 | 19   | `IntervalTooShort`          | Validation   | Interval below min floor           |
 | 20   | `BatchTooLarge`             | Limit        | Batch size above max               |
-| 21   | `ZeroBalanceAvailable`              | Compatibility | Legacy withdraw path; never emitted by current WASM |
+| 21   | `ZeroBalanceAvailable`              | State        | Merchant withdraw attempted with no accrued revenue |
 | 22   | `MerchantFrozen`            | Auth         | Subscribe to frozen merchant       |
 | 23   | `NoPendingProposal`         | State        | Commit without proposal            |
 | 24   | `SubscriptionAlreadyActive` | State        | Transfer target already subscribed |
@@ -44,7 +44,7 @@ Use the [quick-reference table](#quick-reference-table) for lookups, then jump t
 | 28   | `GlobalVolumeExceeded`      | Limit        | Protocol volume cap hit            |
 | 29   | `InvalidBatchSize`          | Validation   | Configured batch limit invalid     |
 | 30   | `ContractPausedError` (deprecated) | Compatibility | Deprecated alias; never emitted by current WASM |
-| 31   | *(reserved)*                | Reserved     | Historical gap; never emitted      |
+| 31   | `Reserved31` (deprecated)   | Reserved     | Reserved compatibility variant; not emitted |
 | 32   | `InvalidRecipient`          | Validation   | Recipient address invalid           |
 | 33   | `InvalidVolumeCap`          | Validation   | Volume cap override not positive   |
 | 34   | `InvalidFeeBounds`          | Validation   | Fee bounds min/max invalid         |
@@ -62,7 +62,7 @@ Use the [quick-reference table](#quick-reference-table) for lookups, then jump t
 | 46   | `IntervalExceedsMaximum`    | Validation   | Interval above `MAX_SUBSCRIPTION_INTERVAL` (400 yr) |
 | 47   | `FreezeReasonTooLong`       | Validation   | Merchant freeze reason > 128 bytes |
 
-> **Compatibility:** code 18 (`ContractPaused`) is the sole canonical contract-paused error and is emitted by every pause guard. `ContractPausedError` remains a deprecated Rust enum variant at code 30 only for source/wire compatibility with clients that published that value; it is never emitted by current WASM. Code 31 is intentionally reserved and has no enum variant in the published map. Code 37 remains unassigned; new errors must use a new code and update this table, frontend handling, and mapping tests together. Source of truth: [`contract/src/errors.rs`](../contract/src/errors.rs).
+> **Compatibility:** code 18 (`ContractPaused`) is the sole canonical contract-paused error and is emitted by every pause guard. `ContractPausedError` remains a deprecated Rust enum variant at code 30 only for source/wire compatibility with clients that published that value; it is never emitted by current WASM. Code 31 has a deprecated `Reserved31` Rust enum variant documenting the reserved wire-map slot; it is not emitted by current contract logic. Code 37 remains unassigned; new errors must use a new code and update this table, frontend handling, and mapping tests together. Source of truth: [`contract/src/errors.rs`](../contract/src/errors.rs).
 
 ---
 
@@ -417,16 +417,16 @@ batch. See [`EVENTS.md`](EVENTS.md#batch_charge_skips).
 
 ---
 
-### 21 — `ZeroBalanceAvailable` (legacy)
+### 21 — `ZeroBalanceAvailable`
 
 | Field               | Detail                                                  |
 | ------------------- | ------------------------------------------------------- |
-| **When it occurs**  | Legacy / unused error variant (formerly emitted by `withdraw_merchant_revenue` before migration to non-custodial direct payouts). Kept for discriminant compatibility. |
-| **Immediate cause** | N/A — merchant revenue is non-custodial and settles directly on charge. |
+| **When it occurs**  | A merchant calls `withdraw_merchant_revenue` with no accrued revenue. |
+| **Immediate cause** | The available withdrawal amount is zero or negative. |
 
 **Recovery steps**
 
-1. No action needed; charges settle directly into merchant wallets without withdrawal.
+1. Confirm the merchant has accrued revenue before retrying the withdrawal.
 
 ---
 

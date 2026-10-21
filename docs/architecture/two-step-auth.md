@@ -41,28 +41,22 @@ PayFlow actually implements two different flavors of "two-step," and it's worth 
 
 Used by **fee**, **grace period**, and **upgrade**. The admin calls `propose_*`, then the _same_ admin later calls `commit_*`. This protects against fat-fingering and gives observers (anyone watching events) a chance to flag a bad proposal before it's committed — but it does **not** protect against a single compromised admin key, since that one key can perform both steps.
 
-```text
-   admin                              admin
-     │                                  │
-     │ propose_X(new_value)             │ commit_X()
-     ▼                                  ▼
-┌─────────┐   PendingX = new_value  ┌─────────┐   X = new_value
-│  (none)  │ ───────────────────▶  │ Pending  │ ───────────────▶  │ Committed │
-└─────────┘                        └─────────┘                    └───────────┘
+```mermaid
+stateDiagram-v2
+    [*] --> Current: Active value
+    Current --> Pending: propose_fee / propose_grace_period / propose_upgrade
+    Pending --> Updated: commit_fee / commit_grace_period / commit_upgrade
 ```
 
 ### Propose → Accept (different authority)
 
 Used only by **admin transfer**. The _current_ admin calls `transfer_admin`, but the _new_ admin — a different key entirely — must call `accept_admin` to complete the change. This is the stronger protection: it guarantees the new admin address is actually controlled by someone who can sign for it, and a compromised current-admin key alone cannot complete a transfer to an address the attacker doesn't control.
 
-```text
- current admin                      proposed new admin
-      │                                    │
-      │ transfer_admin(new_admin)          │ accept_admin()
-      ▼                                    ▼
- ┌─────────┐  PendingAdmin = new_admin  ┌─────────┐   Admin = new_admin
- │ (admin)  │ ─────────────────────────▶│ Pending  │ ─────────────────▶ │ (new_admin is admin) │
- └─────────┘                            └─────────┘
+```mermaid
+stateDiagram-v2
+  [*] --> CurrentAdmin: No transfer pending
+  CurrentAdmin --> PendingAdmin: transfer_admin(new_admin), auth current admin
+  PendingAdmin --> NewAdmin: accept_admin(), auth proposed admin
 ```
 
 ---
@@ -93,11 +87,12 @@ pub fn accept_admin(env: &Env) {
 
 **State diagram:**
 
-```text
-┌──────────────┐  transfer_admin(new)   ┌───────────────────┐  accept_admin()   ┌────────────────┐
-│ admin = A     │ ───────────────────▶ │ PendingAdmin = new  │ ─────────────────▶ │ admin = new     │
-│ (no pending)  │  auth: A              │ admin = A (unchanged)│  auth: new         │ PendingAdmin unset│
-└──────────────┘                        └───────────────────┘                     └────────────────┘
+```mermaid
+stateDiagram-v2
+  [*] --> AdminA: No pending transfer
+  AdminA --> PendingAdmin: transfer_admin(new), auth A
+  PendingAdmin --> AdminNew: accept_admin(), auth new
+  note right of PendingAdmin: Admin A remains active until acceptance
 ```
 
 - **Step 1 auth:** the _current_ admin (`current_admin.require_auth()`).

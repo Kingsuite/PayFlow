@@ -1,10 +1,3 @@
-# FlowPay Scripts
-
-Operational and analytics scripts for the FlowPay contract.  All scripts are written in TypeScript and run with `ts-node`.
-
----
-
-## Setup
 # PayFlow Scripts
 
 Operational scripts for the FlowPay recurring-billing contract. All scripts are
@@ -56,19 +49,19 @@ Fetches the top merchants by subscriber count using the on-chain `get_top_mercha
 
 ```bash
 # Show top 10 merchants (default)
-npx ts-node scripts/top-merchants.ts
+npx tsx scripts/top-merchants.ts
 
 # Show top 20 (contract maximum)
-npx ts-node scripts/top-merchants.ts --limit 20
+npx tsx scripts/top-merchants.ts --limit 20
 
 # Paginate: page 2, 5 per page
-npx ts-node scripts/top-merchants.ts --limit 20 --page 2 --page-size 5
+npx tsx scripts/top-merchants.ts --limit 20 --page 2 --page-size 5
 
 # JSON output
-npx ts-node scripts/top-merchants.ts --json
+npx tsx scripts/top-merchants.ts --json
 
 # Dry-run (validate config without RPC call)
-npx ts-node scripts/top-merchants.ts --dry-run
+npx tsx scripts/top-merchants.ts --dry-run
 ```
 
 **Options:**
@@ -254,6 +247,7 @@ The keeper's signing key is `SECRET_KEY` (deprecated alias `KEEPER_SECRET`), rea
 - [`docs/KEEPER.md`](../docs/KEEPER.md) — Full keeper runbook (env vars, DLQ, dry-run, ChargeResult table)
 - [`docs/API.md`](../docs/API.md) — Contract function reference
 - [`docs/DEPLOYMENT.md`](../docs/DEPLOYMENT.md) — Contract deployment and migration guide
+
 ---
 
 ## Scripts
@@ -270,18 +264,6 @@ The keeper's signing key is `SECRET_KEY` (deprecated alias `KEEPER_SECRET`), rea
 | `subscription-snapshot.ts`     | Snapshot all subscription states                                         |
 | `daily-revenue-summary.ts`     | Daily revenue report                                                     |
 | `export-merchant-report.ts`    | Per-merchant activity report                                             |
-| Script                         | Purpose                                                                   |
-| ------------------------------ | ------------------------------------------------------------------------- |
-| `keeper.ts`                    | Autonomous keeper — calls `batch_charge` on a schedule; supports dry-run  |
-| `watch-events.ts`              | Real-time contract event monitor                          |
-| `check-allowances.ts`          | Audit subscriber token allowances                         |
-| `alert-expiring-allowances.ts` | Alert on allowances expiring within a configurable window |
-| `indexer.ts`                   | Persist contract events to SQLite                         |
-| `query-events.ts`              | Query the SQLite event database                           |
-| `health-check.ts`              | Contract responsiveness check                             |
-| `subscription-snapshot.ts`     | Snapshot all subscription states                          |
-| `daily-revenue-summary.ts`     | Daily revenue report                                      |
-| `export-merchant-report.ts`    | Per-merchant activity report                              |
 
 ## Testnet quick start
 
@@ -1458,6 +1440,22 @@ own authority to spend their balance, and it is not something an operator
 should hold in bulk. Prefer asking the subscriber to raise their own allowance;
 use this for a one-off rescue, and always with `--simulate` first. `AMOUNT`
 is in stroops, so 1 XLM is `10000000`.
+
+### allowance-utils.ts
+
+Shared rate-limiting, retry, and ledger-time defaults used by the allowance-checking scripts.
+
+### event-dedup.ts
+
+Reusable in-memory LRU cache for skipping duplicate contract events in the indexer and event watcher. It is process-local, not durable across restarts.
+
+### merchant-queries.ts
+
+Read-only SQLite query helpers for merchant analytics and reports, including indexer freshness checks.
+
+### webhook.ts
+
+Delivers HMAC-SHA256-signed webhook payloads with retries; exhausted deliveries are written to a local dead-letter queue. Requires `WEBHOOK_URL` and `WEBHOOK_SECRET`.
 
 ## Environment variable reference
 
