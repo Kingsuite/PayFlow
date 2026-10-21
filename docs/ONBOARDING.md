@@ -343,7 +343,7 @@ Cross-check [`docs/CONTRIBUTING-CONTRACT.md`](CONTRIBUTING-CONTRACT.md) — it h
 ### How the review process works
 
 1. Open the PR against `master` on the upstream repository (not your fork's `master`).
-2. CI runs automatically — the `Backend (Rust)` and `Frontend` GitHub Actions workflows (see [`.github/workflows/`](../.github/workflows/)) must pass before a maintainer will review in depth.
+2. This repository has no CI workflows, so run the local checks in [`docs/development/ci-workflows.md`](development/ci-workflows.md) (`cargo test`, `npm run typecheck`) and make sure they pass before a maintainer reviews in depth.
 3. A maintainer reviews for correctness, adherence to the conventions in `CONTRIBUTING*.md`, and test coverage.
 4. Expect review feedback — this is normal, not a sign your PR was bad. Address comments with new commits (don't force-push over review history mid-review unless asked to).
 

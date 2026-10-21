@@ -6,11 +6,13 @@
  *   2. each `#anchor` resolves to a heading that actually exists in the target,
  *   3. each intra-document `#anchor` resolves within the same file.
  *
- * Also reports markdown files that nothing links to (orphans), which is how a
- * new doc ends up unreachable.
+ * Also reports markdown files that no other markdown file links to (orphans),
+ * which is how a new doc ends up unreachable. The root README.md is the entry
+ * point and is never an orphan. Orphans under docs/ are errors (docs/README.md
+ * is the index that must reach them); orphans elsewhere are warnings.
  *
  * Usage: node check-doc-links.mjs [rootDir]
- * Exits 1 if any broken link is found.
+ * Exits 1 if any broken link or docs/ orphan is found.
  */
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { join, dirname, resolve, relative, extname } from "node:path";
@@ -83,6 +85,11 @@ const broken = [];
 const linked = new Set();
 let checked = 0;
 
+/** Records `target` as linked to, ignoring self-links. */
+function markLinked(target, from) {
+  if (target !== from) linked.add(target);
+}
+
 for (const file of files) {
   const md = readFileSync(file, "utf8");
   const rel = relative(ROOT, file).replace(/\\/g, "/");
@@ -99,7 +106,6 @@ for (const file of files) {
       if (anchor && !anchorsFor(file).has(decodeURIComponent(anchor).toLowerCase())) {
         broken.push(`${rel}  ->  #${anchor}   (no such heading in this file)`);
       }
-      linked.add(rel);
       continue;
     }
 
@@ -114,8 +120,11 @@ for (const file of files) {
       continue;
     }
 
-    // Bare directory link: fine.
-    if (extname(resolved) !== ".md") { linked.add(rel); continue; }
+    // Bare directory link: fine; GitHub renders its README.md.
+    if (extname(resolved) !== ".md") {
+      if (statSync(resolved).isDirectory()) markLinked(join(resolved, "README.md"), file);
+      continue;
+    }
 
     if (anchor) {
       const want = decodeURIComponent(anchor).toLowerCase();
@@ -123,14 +132,29 @@ for (const file of files) {
         broken.push(`${rel}  ->  ${target}   (no heading '${anchor}' in ${relative(ROOT, resolved).replace(/\\/g, "/")})`);
       }
     }
-    linked.add(rel);
+    markLinked(resolved, file);
   }
 }
 
+const orphans = files
+  .filter((f) => !linked.has(f) && f !== join(ROOT, "README.md"))
+  .map((f) => relative(ROOT, f).replace(/\\/g, "/"))
+  .sort();
+const docOrphans = orphans.filter((o) => o.startsWith("docs/"));
+
 console.log(`Scanned ${files.length} markdown file(s), checked ${checked} link(s).`);
+const warnOrphans = orphans.filter((o) => !o.startsWith("docs/"));
+if (warnOrphans.length) {
+  console.log(`\nORPHANS outside docs/ (warning, ${warnOrphans.length}):`);
+  for (const o of warnOrphans) console.log("  " + o);
+}
+if (docOrphans.length) {
+  console.log(`\nORPHANS under docs/ (${docOrphans.length}) — link them from docs/README.md:`);
+  for (const o of docOrphans) console.log("  " + o);
+}
 if (broken.length) {
   console.log(`\nBROKEN LINKS (${broken.length}):`);
   for (const b of broken) console.log("  " + b);
-  process.exit(1);
 }
-console.log("No broken relative links or anchors.");
+if (broken.length || docOrphans.length) process.exit(1);
+console.log("No broken relative links or anchors, and no orphans under docs/.");

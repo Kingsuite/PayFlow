@@ -12,7 +12,7 @@ For day-to-day unit testing (not performance), see [`docs/TESTING.md`](../TESTIN
 - [Interpreting Results](#interpreting-results)
 - [Existing Benchmarks](#existing-benchmarks)
 - [Regression Detection](#regression-detection)
-- [Adding a New Benchmark](#adding-a-new-benchmark)
+- [Adding a New Benchmark](#adding-new-benchmarks)
 - [CI Integration](#ci-integration)
 
 ---
@@ -231,22 +231,14 @@ Steps:
 
 ## CI Integration
 
-The `Backend (Rust)` workflow ([`.github/workflows/rust.yml`](../../.github/workflows/rust.yml)) currently runs `cargo clippy`, `cargo build`, and `cargo test --verbose` on every push/PR to `master` — `cargo test` already includes the benchmark tests, so a benchmark that exceeds its `MAX_*_INSTRUCTIONS` threshold **already fails CI today** as a normal test failure. That's the baseline gate every PR goes through.
+This repository does not ship any GitHub Actions workflow files, so there is no automated benchmark gate. `cargo test` already includes the benchmark tests, so a benchmark that exceeds its `MAX_*_INSTRUCTIONS` threshold fails a local `cargo test` run as a normal test failure. To see the CPU/memory numbers for every benchmark, run:
 
-To add a dedicated, visible benchmark-reporting step (rather than relying on failures buried in the general `cargo test` output), add a step after the existing `Run tests` step:
-
-```yaml
-- name: Run tests
-  run: cargo test --verbose
-  working-directory: contract
-- name: Run benchmarks
-  run: cargo test --features testutils bench -- --nocapture
-  working-directory: contract
+```bash
+cd contract
+cargo test --features testutils bench -- --nocapture
 ```
 
-This re-runs the same benchmark tests (they already ran once as part of `cargo test --verbose` above) but with `--nocapture`, so the CPU/memory numbers for every benchmark show up directly in the Actions log for each PR — useful for a reviewer eyeballing whether a PR touching `subscribe`/`charge`/`pay_per_use`/`batch_charge` shifted the numbers, without needing to run anything locally.
-
-**On tightening this further** (e.g., failing CI on any regression rather than only on crossing the absolute threshold): that requires persisting the previous run's numbers somewhere CI can read them back (a checked-in baseline file, or a cache/artifact keyed by commit) and diffing against them in the workflow — that's a larger change than adding a print step and isn't implemented today. If you want to build it, the [Regression Detection](#regression-detection) manual comparison above is exactly the logic you'd automate: capture `grep -A2 '^\[bench_' ` output before and after, diff the CPU/memory lines, and fail the job if any value increases beyond an agreed tolerance (e.g., 5%).
+Failing on any regression (rather than only on crossing the absolute threshold) would require persisting the previous run's numbers and diffing against them — that isn't implemented today. The [Regression Detection](#regression-detection) manual comparison above is the logic you'd automate.
 
 ---
 
@@ -255,4 +247,4 @@ This re-runs the same benchmark tests (they already ran once as part of `cargo t
 - [`contract/src/bench.rs`](../../contract/src/bench.rs) — the benchmark suite itself
 - [`docs/TESTING.md`](../TESTING.md) — general test suite guide, including snapshot files
 - [`docs/CONTRIBUTING-CONTRACT.md`](../CONTRIBUTING-CONTRACT.md#benchmarks) — contribution checklist requirement to run benchmarks when touching hot-path functions
-- [`.github/workflows/rust.yml`](../../.github/workflows/rust.yml) — CI workflow that runs the benchmark tests today
+- [`docs/development/ci-workflows.md`](ci-workflows.md) — local checks to run before opening a PR

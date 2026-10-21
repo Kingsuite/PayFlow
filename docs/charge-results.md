@@ -528,10 +528,25 @@ agrees with them rather than contradicting them by accident.
 
 | Consumer                      | Assumes            | Actually sees       | Effect                                                    |
 | ----------------------------- | ------------------ | ------------------- | --------------------------------------------------------- |
-| `scripts/keeper.ts` `decodeEnumVec` | `scvSymbol`   | `scvU32`            | Non-`Charged` branches never match, so dry-run volume reads as `0` and every result lands in `skipCounts` under a garbage key. |
-| `scripts/replay-dlq.ts` `parseChargeResults` | `scvVec` / `scvMap` | `scvU32` | Neither branch is reachable; `charged` is always `0` and `skipped` equals the batch size. |
 | `scripts/replay-dlq.ts` `returnValue` read | `returnValue` on `getTransaction` | nested `result.retVal` in current SDK | Falls back to a zero tally that is indistinguishable from a genuinely empty batch. |
 | `frontend/src/stellar.ts` `BatchChargeOutcome` | variant name from `switch()` | `"scvU32"` | Every outcome renders as the failure state. |
+
+### Decoders that are now correct
+
+The two script-side decoders that used to be listed here have been fixed. They
+now share one decoder, `scripts/lib/charge-results.ts`, so the variant table
+lives in one place and can be diffed against the contract:
+
+| Consumer                      | Was                                      | Now                                                        |
+| ----------------------------- | ---------------------------------------- | ---------------------------------------------------------- |
+| `scripts/keeper.ts` `decodeEnumVec` | branched on `scvSymbol`            | decodes the `scvU32` discriminant through the shared table |
+| `scripts/replay-dlq.ts` `parseChargeResults` | branched on `scvVec` / `scvMap` | decodes the `scvU32` discriminant through the shared table |
+
+`scripts/__tests__/keeper-decode.test.ts` pins the shared table against
+`contract/src/batch.rs` and decodes the real payloads in
+`scripts/fixtures/charge-results.json`, so a new contract variant that is not
+carried over into the table fails the test suite instead of silently
+mis-reporting every subscriber.
 
 The consumers that read the **event** path are unaffected, because they work from
 the indexer's stored JSON (or a plain RPC `getEvents` response) and never touch
@@ -540,8 +555,7 @@ the indexer's stored JSON (or a plain RPC `getEvents` response) and never touch
 `scripts/churn-analysis.ts`. None of them decodes a `ChargeResult` at all, so
 none of them is subject to the discriminants above.
 
-Fixing these is behaviour-changing work and is deliberately out of scope for
-this document. The decoders above are drop-in replacements for the three
+The decoders above are drop-in replacements for the remaining
 `ChargeResult` readers.
 
 ---

@@ -133,4 +133,3 @@ pub fn require_valid_subscribe_addresses(env: &Env, user: &Address, merchant: &A
         env.panic_with_error(ContractError::InvalidRecipient);
     }
 }
-

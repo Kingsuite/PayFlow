@@ -99,9 +99,7 @@ See [`scripts/README.md`](scripts/README.md) and [`docs/ONBOARDING.md`](docs/ONB
 
 ## CI workflows
 
-GitHub Actions runs **Backend (Rust)** and **Frontend** workflows on every PR to `master`. Frontend Vitest and scripts typecheck are **not** enforced in CI today.
-
-Full truth table, line-by-line job steps, and copy-pastable recommended YAML: [`docs/development/ci-workflows.md`](docs/development/ci-workflows.md).
+This repository does not ship any GitHub Actions workflow files, so nothing is enforced automatically on PRs. Run the local checks (`cargo test`, `npm run typecheck`, …) listed in [`docs/development/ci-workflows.md`](docs/development/ci-workflows.md) before opening a PR.
 
 ---
 
