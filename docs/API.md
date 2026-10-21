@@ -34,7 +34,6 @@ This document tracks the current public contract surface in [contract/src/lib.rs
   - [is\_contract\_paused](#is_contract_paused)
   - [get\_admin](#get_admin)
   - [get\_token](#get_token)
-  - [upgrade](#upgrade)
   - [propose_upgrade](#propose_upgrade)
   - [cancel_pending_upgrade](#cancel_pending_upgrade)
   - [commit_upgrade](#commit_upgrade)
@@ -85,7 +84,9 @@ This document tracks the current public contract surface in [contract/src/lib.rs
   - [remove\_daily\_limit](#remove_daily_limit)
   - [get\_daily\_limit](#get_daily_limit)
   - [get\_daily\_spent](#get_daily_spent)
-  - [get\_referral](#get_referral)
+  - [get\_day\_start](#get_day_start)
+  - [get\_daily\_limit\_status](#get_daily_limit_status)
+  - [get\_referral](#get_referrer)
   - [get\_referrer](#get_referrer)
   - [migrate](#migrate)
   - [get\_schema\_version](#get_schema_version)
@@ -100,7 +101,7 @@ This document tracks the current public contract surface in [contract/src/lib.rs
   - [set\_initial\_admin](#set_initial_admin)
   - [contract\_health\_check](#contract_health_check)
   - [clear\_charge\_history](#clear_charge_history)
-  - [prune\_charge\_history](#prune_charge_history)
+  - [prune\_charge\_history](#clear_charge_history)
   - [get\_charge\_history\_ttl](#get_charge_history_ttl)
   - [get\_charge\_history\_page](#get_charge_history_page)
   - [transfer\_subscription](#transfer_subscription)
@@ -367,6 +368,24 @@ CLI example:
 
 ```bash
 soroban contract invoke --id <CONTRACT_ID> --source deployer --network testnet -- initialize --token <TOKEN_ADDRESS> --admin <ADMIN_ADDRESS>
+```
+
+### `bump_instance_ttl`
+
+```
+bump_instance_ttl(env: Env)
+```
+
+Permissionlessly refreshes the shared instance storage TTL. Keeper liveness probes may call it during read- or simulation-heavy periods. It does not inspect pause state, transfer funds, or mutate protocol state.
+
+Auth: none.
+
+Returns: `()`.
+
+CLI example:
+
+```bash
+soroban contract invoke --id <CONTRACT_ID> --source <ANY_KEY> --network testnet -- bump_instance_ttl
 ```
 
 ### `subscribe`
@@ -1736,18 +1755,34 @@ See the [full reference entry below](#get_daily_spent).
 ### `get_day_start`
 
 ```
-get_day_start(env: Env, user: Address) -> bool
+get_day_start(env: Env, user: Address) -> Option<u64>
 ```
 
 Auth: none.
 
-Returns: `bool` — `true` if `DataKey::DayStart(user)` exists (current ~24h spend window is active), `false` otherwise. This is a presence marker, not a wall-clock timestamp.
+Returns: `Option<u64>` — `Some(timestamp)` while the current ~24h spend window is active, where `timestamp` is the ledger timestamp of the window's first `pay_per_use` / `pay_per_use_to`; `None` if no window has started or `DataKey::DayStart(user)` has expired. The window ends when that temporary entry's TTL expires, not at a fixed `timestamp + 86400`.
 
 CLI example:
 _See also: [Daily Spending Limits Deep-Dive](./DAILY-LIMITS.md)._
 
 ```bash
 soroban contract invoke --id <CONTRACT_ID> --network testnet -- get_day_start --user <USER_ADDRESS>
+```
+
+### `get_daily_limit_status`
+
+```
+get_daily_limit_status(env: Env, user: Address) -> DailyLimitStatus
+```
+
+Auth: none.
+
+Returns: `DailyLimitStatus { limit: Option<i128>, spent: i128, day_start: Option<u64>, remaining: Option<i128> }` — the values of `get_daily_limit`, `get_daily_spent` and `get_day_start` read together, plus `remaining`, which is `None` when no limit is set and `max(limit - spent, 0)` otherwise.
+
+_See also: [Daily Spending Limits Deep-Dive](./DAILY-LIMITS.md#state-inspection)._
+
+```bash
+soroban contract invoke --id <CONTRACT_ID> --network testnet -- get_daily_limit_status --user <USER_ADDRESS>
 ```
 
 ### `get_referrer`
@@ -2166,7 +2201,7 @@ async function loadAllChargeHistory(user: string): Promise<number[]> {
 }
 ```
 
-See [INTEGRATION-GUIDE.md § 8 — Paginating Charge History](./INTEGRATION-GUIDE.md#8-paginating-charge-history) for the same pattern in a full integration walkthrough.
+See [INTEGRATION-GUIDE.md § 9 — Paginating Charge History](./INTEGRATION-GUIDE.md#9-paginating-charge-history) for the same pattern in a full integration walkthrough.
 
 ### `transfer_subscription`
 

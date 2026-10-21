@@ -243,16 +243,9 @@ npm run typecheck
 
 ## Environment Variables
 
-| Variable | Used by | Description |
-| --- | --- | --- |
-| `CONTRACT_ID` / `VITE_CONTRACT_ID` | all | Deployed FlowPay contract ID |
-| `RPC_URL` / `VITE_RPC_URL` | all | Soroban RPC endpoint |
-| `NETWORK_PASSPHRASE` / `VITE_NETWORK_PASSPHRASE` | all | Stellar network passphrase |
-| `SOROBAN_SOURCE_ACCOUNT` | deploy-pipeline, top-merchants | Source account for read-only RPC queries |
-| `SOROBAN_SECRET_KEY` | keeper (not in this dir) | Keeper signing key |
-| `INDEXER_DB_PATH` | backup-indexer-db | Override default `data/events.db` |
-| `BACKUP_DIR` | backup-indexer-db | Override default `data/backups/` |
-| `PAGE_SIZE` | keeper | Batch size for `batch_charge` (max **20**) |
+Every environment variable read under `scripts/` — with its default and the scripts that read it — is documented in one place: [`docs/scripts-environment.md`](../docs/scripts-environment.md).
+
+The keeper's signing key is `SECRET_KEY` (deprecated alias `KEEPER_SECRET`), read by [`keeper.ts`](keeper.ts) in this directory. `PAGE_SIZE` is the subscriber page size used by `batch-optimizer.ts` (default and max `50`), not the `batch_charge` batch size.
 
 ---
 
@@ -572,13 +565,14 @@ tracking guide.
 | `CONTRACT_ID`      | (required)                            | Contract to filter                    |
 | `RPC_URL`          | `https://soroban-testnet.stellar.org` | Soroban RPC                           |
 | `POLL_INTERVAL_MS` | `10000`                               | Poll interval                         |
-| `LOG_LEVEL`        | `info`                                | `debug` \| `info` \| `error`          |
+| `LOG_LEVEL`        | `info`                                | `debug` \| `info` \| `warn` \| `error` |
 | `DATA_DIR`         | `data`                                | Directory for the DB file             |
 | `DB_FILE`          | `resolve(DATA_DIR, "events.db")`      | Full path override                    |
 | `START_LEDGER`     | unset → latest ledger                 | First-run start when no `last_ledger` |
 
-The indexer header mentions `NETWORK_PASSPHRASE`; the implementation does **not**
-read that env var.
+`indexer.ts` does not read `NETWORK_PASSPHRASE` itself, but its RPC client
+(`rpc-client.ts`) does, along with `RPC_URLS` — see
+[`docs/scripts-environment.md`](../docs/scripts-environment.md).
 
 ### Startup
 
@@ -860,53 +854,9 @@ uses `RPC_URL` to probe the Soroban RPC endpoint.
 
 ## Environment matrix
 
-Variables actually used by keeper, indexer, metrics-server, Compose, or the
-keeper Dockerfile. Defaults are from source or `.env.example`.
+Every environment variable read under `scripts/` — with its default and the scripts that read it — is documented in one place: [`docs/scripts-environment.md`](../docs/scripts-environment.md).
 
-| Variable | Default / example | Used by | Purpose | Notes |
-| --- | --- | --- | --- | --- |
-| `CONTRACT_ID` | empty; `.env.example` blank | keeper, indexer | Deployed contract ID | Required (validateEnv / indexer exit 1). Metrics header lists it but does not read it. Compose via `.env`. |
-| `KEEPER_SECRET` | empty | keeper | Sign keeper transactions | Required unless `DRY_RUN=true`. Testnet `S…` only in examples. |
-| `KEEPER_PUBLIC_KEY` | `""` | keeper | Source account pubkey | Required by `validateEnv` (including dry-run). **Not** in `.env.example`. |
-| `DRY_RUN` | unset → live | keeper | Simulation vs live | Only `"true"` enables dry-run. Not in `.env.example`. |
-| `RPC_URL` | `https://soroban-testnet.stellar.org` | keeper, indexer, Dockerfile HEALTHCHECK | Soroban RPC | Compose via `.env`. Metrics header only. |
-| `NETWORK_PASSPHRASE` | `Networks.TESTNET` / `.env.example`: `Test SDF Network ; September 2015` | keeper | Network passphrase | Indexer header only — not read by indexer. |
-| `BATCH_SIZE` | `50` (clamped 1–50) | keeper | Page size for `batch_charge` | Not in `.env.example`. |
-| `INTERVAL_SECONDS` | `3600` (min 1) | keeper | Loop interval | Not in `.env.example`. |
-| `REPORT_DIR` | `<script_dir>/data/benchmarks` | keeper | Dry-run reports / live pointer | Not in `.env.example`. |
-| `CHARGE_INTERVAL_MS` | `3600000` in `.env.example` | **none (stale example)** | — | Listed in `.env.example`; **not read** by current `keeper.ts`. |
-| `PAGE_SIZE` | `100` in `.env.example` | **none (stale example)** | — | Listed in `.env.example`; **not read** by current `keeper.ts`. |
-| `MAX_RETRIES` | `3` in `.env.example` | **none (stale example)** | — | Listed in `.env.example`; **not read** by current `keeper.ts`. |
-| `LOG_LEVEL` | `info` | keeper, indexer | Log verbosity | All four core scripts (keeper, indexer, health-check, alert-failed-charges) now use the shared logger and respect `LOG_LEVEL`. Set `LOG_FORMAT=json` for JSON-lines output. |
-| `DATA_DIR` | `data` | indexer | SQLite directory | Compose volume is `/app/data` if indexer is run there. Not in `.env.example`. |
-| `DB_FILE` | `DATA_DIR/events.db` | indexer | SQLite path override | Not in `.env.example`. |
-| `POLL_INTERVAL_MS` | `10000` | indexer | Event poll interval | Not in `.env.example`. |
-| `START_LEDGER` | unset → latest | indexer | First-run start ledger | Not in `.env.example`. |
-| `METRICS_PORT` | `9090` | metrics-server | HTTP listen port | Not in `.env.example` or Compose. |
-| `NODE_ENV` | `production` (image) | Docker runtime | Node environment | Set in Dockerfile. |
-| `NODE_OPTIONS` | `--unhandled-rejections=throw` | Docker runtime | Crash on unhandled rejections | Set in Dockerfile. |
-| Variable             | Default / example                                                        | Used by                                 | Purpose                       | Notes                                                                                           |
-| -------------------- | ------------------------------------------------------------------------ | --------------------------------------- | ----------------------------- | ----------------------------------------------------------------------------------------------- |
-| `CONTRACT_ID`        | empty; `.env.example` blank                                              | keeper, indexer                         | Deployed contract ID          | Required (exit 1 if missing). Metrics header lists it but does not read it. Compose via `.env`. |
-| `KEEPER_SECRET`      | empty                                                                    | keeper                                  | Sign keeper transactions      | Required in the primary config block. Testnet `S…` only in examples.                            |
-| `KEEPER_PUBLIC_KEY`  | empty; `.env.example` blank                                              | keeper                                  | Source account pubkey         | Required by `validateEnv`. Now included in `.env.example`.                                      |
-| `DRY_RUN`            | `false`; `.env.example`                                                  | keeper                                  | Simulation vs live            | Set `"true"` to enable dry-run. Included in `.env.example`.                                     |
-| `RPC_URL`            | `https://soroban-testnet.stellar.org`                                    | keeper, indexer, Dockerfile HEALTHCHECK | Soroban RPC                   | Compose via `.env`. Metrics header only.                                                        |
-| `NETWORK_PASSPHRASE` | `Networks.TESTNET` / `.env.example`: `Test SDF Network ; September 2015` | keeper                                  | Network passphrase            | Indexer header only — not read by indexer.                                                      |
-| `BATCH_SIZE`         | `50` (clamped 1–50)                                                      | keeper                                  | Page size for `batch_charge`  | Included in `.env.example`.                                                                     |
-| `INTERVAL_SECONDS`   | `3600`                                                                   | keeper                                  | Loop interval                 | Included in `.env.example`.                                                                     |
-| `KEEPER_USE_LEGACY_PAGING` | `false`                                                            | keeper                                  | Use legacy sequential paging | Included in `.env.example`.                                                                     |
-| `LOG_LEVEL`          | `info`                                                                   | keeper, indexer                         | Log verbosity                 | Indexer: `debug` \| `info` \| `error`.                                                          |
-| `DATA_DIR`           | `data`                                                                   | indexer                                 | SQLite directory              | In Docker, mounted to `/app/data` via shared volume. Included in `.env.example`.                |
-| `DB_FILE`            | `DATA_DIR/events.db`                                                     | indexer                                 | SQLite path override          | Optional. Included in `.env.example` (commented out).                                           |
-| `POLL_INTERVAL_MS`   | `10000`                                                                  | indexer                                 | Event poll interval           | Included in `.env.example`.                                                                     |
-| `START_LEDGER`       | unset → latest                                                           | indexer                                 | First-run start ledger        | Optional. Included in `.env.example` (commented out).                                           |
-| `METRICS_PORT`       | `9090`                                                                   | metrics-server                          | HTTP listen port              | Included in `.env.example`.                                                                     |
-| `REPORT_DIR`         | `<script_dir>/data/benchmarks`                                           | keeper                                  | Dry-run reports / live pointer | Not in `.env.example`.                                                                          |
-| `NODE_ENV`           | `production` (image)                                                     | Docker runtime                          | Node environment              | Set in Dockerfile.                                                                              |
-| `NODE_OPTIONS`       | `--unhandled-rejections=throw`                                           | Docker runtime                          | Crash on unhandled rejections | Set in Dockerfile.                                                                              |
-
-Compose itself declares no `environment:` keys; it only loads `.env`.
+Compose itself declares no `environment:` keys; it only loads `.env`. The Docker image additionally sets `NODE_ENV=production` and `NODE_OPTIONS=--unhandled-rejections=throw`.
 
 ---
 
@@ -1502,46 +1452,7 @@ is in stroops, so 1 XLM is `10000000`.
 
 ## Environment variable reference
 
-All scripts read configuration from environment variables. The full set used
-across all scripts:
-
-| Variable               | Used by                                         | Description                                                                          |
-| ---------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------ |
-| `CONTRACT_ID`          | all                                             | Deployed FlowPay contract ID                                                         |
-| `RPC_URL`              | all                                             | Soroban RPC endpoint                                                                 |
-| `NETWORK_PASSPHRASE`   | keeper, check-allowances                        | Stellar network passphrase                                                           |
-| `KEEPER_PUBLIC_KEY`    | keeper                                          | Source account public key (must be funded on the network)                            |
-| `KEEPER_SECRET`        | keeper                                          | Stellar secret key (S…) for signing transactions (required in live mode)             |
-| `DRY_RUN`              | keeper                                          | Set `true` to simulate charges without submitting transactions                       |
-| `BATCH_SIZE`           | keeper                                          | Subscriptions per batch_charge call (default 50, max 50)                             |
-| `INTERVAL_SECONDS`     | keeper                                          | Seconds between charge cycles (default 3600)                                         |
-| `REPORT_DIR`           | keeper                                          | Directory for dry-run reports and live-cycle pointer (default: `data/benchmarks`)    |
-| `WEBHOOK_URL`          | alert-expiring-allowances, alert-failed-charges | Webhook POST target                                                                  |
-| `ALERT_WINDOW_LEDGERS` | alert-expiring-allowances                       | Expiry alert threshold                                                               |
-| `DATA_DIR`             | indexer, query-events                           | SQLite database directory                                                            |
-| `DB_FILE`              | indexer, query-events                           | SQLite database path override                                                        |
-| `POLL_INTERVAL_MS`     | indexer                                         | Event polling interval                                                               |
-| `START_LEDGER`         | indexer                                         | First-run start ledger                                                               |
-| `LOG_LEVEL`            | keeper, indexer, health-check, alert-failed-charges | Log verbosity (`debug` \| `info` \| `warn` \| `error`, default `info`)          |
-| `LOG_FORMAT`           | keeper, indexer, health-check, alert-failed-charges | Set to `json` for JSON-lines output (recommended in Docker)                     |
-| Variable               | Used by                                         | Description                                                                       |
-| ---------------------- | ----------------------------------------------- | --------------------------------------------------------------------------------- |
-| `CONTRACT_ID`          | all                                             | Deployed FlowPay contract ID                                                      |
-| `RPC_URL`              | all                                             | Soroban RPC endpoint                                                              |
-| `NETWORK_PASSPHRASE`   | keeper, check-allowances                        | Stellar network passphrase                                                        |
-| `KEEPER_PUBLIC_KEY`    | keeper                                          | Source account public key (must be funded on the network)                         |
-| `KEEPER_SECRET`        | keeper                                          | Stellar secret key (S…) for signing transactions (required in live mode)          |
-| `DRY_RUN`              | keeper                                          | Set `true` to simulate charges without submitting transactions                    |
-| `BATCH_SIZE`           | keeper                                          | Subscriptions per batch_charge call (default 50, max 50)                          |
-| `INTERVAL_SECONDS`     | keeper                                          | Seconds between charge cycles (default 3600)                                      |
-| `REPORT_DIR`           | keeper                                          | Directory for dry-run reports and live-cycle pointer (default: `data/benchmarks`) |
-| `WEBHOOK_URL`          | alert-expiring-allowances, alert-failed-charges | Webhook POST target                                                               |
-| `ALERT_WINDOW_LEDGERS` | alert-expiring-allowances                       | Expiry alert threshold                                                            |
-| `DATA_DIR`             | indexer, query-events                           | SQLite database directory                                                         |
-| `DB_FILE`              | indexer, query-events                           | SQLite database path override                                                     |
-| `POLL_INTERVAL_MS`     | indexer                                         | Event polling interval                                                            |
-| `START_LEDGER`         | indexer                                         | First-run start ledger                                                            |
-| `LOG_LEVEL`            | keeper, indexer                                 | Log verbosity                                                                     |
+Every environment variable read under `scripts/` — with its default and the scripts that read it — is documented in one place: [`docs/scripts-environment.md`](../docs/scripts-environment.md).
 
 ## Related
 
