@@ -127,19 +127,11 @@ the *effective* limit, but only within the ceiling.
 
 | Knob                          | Storage key              | Getter                       | Setter                            | Default | Range        | Rejects `0`? |
 | ----------------------------- | ------------------------ | ---------------------------- | --------------------------------- | ------- | ------------ | ------------ |
-| Charge / extend batch size    | `DataKey::MaxBatchSize`  | `get_max_batch_size`         | `set_max_batch_size`              | 50      | 0 - 200      | **No** - see below |
+| Charge / extend batch size    | `DataKey::MaxBatchSize`  | `get_max_batch_size`         | `set_max_batch_size`              | 50      | 1 - 200      | Yes          |
 | Whitelist batch size          | `DataKey::MaxWhitelistBatchSize` | `get_max_whitelist_batch_size` | `set_max_whitelist_batch_size` | 50      | 1 - 200      | Yes          |
 
 Both setters are admin-only and panic with `InvalidBatchSize` (error 29) when
-asked for more than 200.
-
-**`set_max_batch_size(0)` is accepted and is a footgun.** Unlike the whitelist
-setter, the charge-side setter does not reject zero, even though its own
-codebase describes zero as the value that "would brick the admin batch
-entrypoints". Once set to 0, every `batch_charge` call with a non-empty `users`
-vector panics `BatchTooLarge`, and there is no way to recover except calling
-`set_max_batch_size` again from a batch of size 0. Treat 1 as the practical
-floor. This asymmetry is a known defect, not a documented feature.
+the value is zero or above 200.
 
 ## Batch operations
 
@@ -153,7 +145,7 @@ changes all the rows that share it.
 | `batch_extend_subscription_ttl`| No     | `get_max_batch_size()` (default 50, max 200)    | `DataKey::MaxBatchSize`              |
 | `batch_cancel`                 | Yes    | 25, fixed                                        | `MAX_BATCH_PAUSE_SUBSCRIPTIONS`      |
 | `batch_pause_subscriptions`    | Yes    | 25, fixed                                        | `MAX_BATCH_PAUSE_SUBSCRIPTIONS`      |
-| `get_batch_charge_estimate`    | No     | 200, fixed                                       | `MAX_BATCH_SIZE_CEILING`             |
+| `get_batch_charge_estimate`    | No     | `get_max_batch_size()` (default 50, max 200)    | `DataKey::MaxBatchSize`              |
 | `whitelist_batch_add`          | Yes    | `get_max_whitelist_batch_size()` (default 50, max 200) | `DataKey::MaxWhitelistBatchSize` |
 | `whitelist_batch_remove`       | Yes    | `get_max_whitelist_batch_size()` (default 50, max 200) | `DataKey::MaxWhitelistBatchSize` |
 | `get_merchant_statuses`        | No     | `get_max_whitelist_batch_size()` (default 50, max 200) | `DataKey::MaxWhitelistBatchSize` |
@@ -162,12 +154,9 @@ changes all the rows that share it.
 
 Two rows surprise people:
 
-- **`get_batch_charge_estimate` accepts 200 while `batch_charge` accepts 50 by
-  default.** The estimate is capped at the hard ceiling and ignores the
-  configured limit entirely. That is intentional: a dry run should not fail for
-  a reason the real call would accept, or vice versa. It does mean you can get
-  a clean estimate for a 200-address batch and then have the live charge reject
-  it at 50.
+- **`get_batch_charge_estimate` shares the same cap as `batch_charge`.** Both
+  the 200 ceiling and the configured `get_max_batch_size()` are applied, so the
+  estimate never succeeds for a batch the live call would reject.
 - **Cancel and pause share the 25 cap, and both are admin-only.** Neither is
   configurable, and there is no `set_max_pause_batch_size`. `batch_charge` and
   `batch_extend_subscription_ttl` need no admin authorization, so a keeper can

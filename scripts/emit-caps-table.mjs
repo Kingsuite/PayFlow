@@ -243,4 +243,99 @@ if (stale.length) {
   for (const s of stale) console.error(`  ${s}`);
   process.exit(1);
 }
+
+// ── Configurable-limits table: verify "Rejects 0" against the code ─────────
+//
+// The prose below the configurable-limits table once claimed an asymmetry that
+// did not exist.  These checks parse the setter bodies in the contract and
+// assert the docs agree, so a future revert cannot reintroduce the drift.
+
+const LIB = join(ROOT, "contract", "src", "lib.rs");
+const WHITELIST = join(ROOT, "contract", "src", "whitelist.rs");
+
+/** Extract a function body (first 500 chars after the opening brace). */
+function fnBody(src, name) {
+  const re = new RegExp(`pub fn ${name}[^{]*\\{([\\s\\S]{0,500}?)\\n\\s{4}\\}`, "m");
+  const m = src.match(re);
+  return m ? m[1] : "";
+}
+
+const libSrc = readFileSync(LIB, "utf8");
+const wlSrc = readFileSync(WHITELIST, "utf8");
+
+const chargeRejectsZero = /size == 0/.test(fnBody(libSrc, "set_max_batch_size"));
+const wlRejectsZero = /size == 0/.test(fnBody(wlSrc, "set_max_whitelist_batch_size"));
+
+const configDrift = [];
+if (chargeRejectsZero && !/set_max_batch_size`\s+\| 50\s+\| 1 - 200\s+\| Yes/.test(md))
+  configDrift.push("set_max_batch_size rejects 0 in code but docs do not say 'Yes'");
+if (!chargeRejectsZero && /set_max_batch_size`\s+\| 50\s+\| 1 - 200\s+\| Yes/.test(md))
+  configDrift.push("set_max_batch_size does not reject 0 in code but docs say 'Yes'");
+if (chargeRejectsZero && /set_max_batch_size[^|]*\| 0 - 200/.test(md))
+  configDrift.push("set_max_batch_size range still says '0 - 200' (should be '1 - 200')");
+
+if (configDrift.length) {
+  console.error("\nSTALE: configurable-limits table disagrees with contract code:");
+  for (const s of configDrift) console.error(`  ${s}`);
+  process.exit(1);
+}
+
+// ── Batch-operations table: verify get_batch_charge_estimate cap ───────────
+//
+// The table once said the estimate was "200, fixed" and ignored the configured
+// limit.  lib.rs now applies both the ceiling and get_max_batch_size(), so
+// the docs must reflect that.
+
+const estimateUsesConfigured = /get_max_batch_size/.test(fnBody(libSrc, "get_batch_charge_estimate"));
+if (estimateUsesConfigured && /get_batch_charge_estimate.*200, fixed/.test(md)) {
+  console.error("\nSTALE: batch-operations table says get_batch_charge_estimate is '200, fixed'");
+  console.error("  but lib.rs applies both the 200 ceiling and get_max_batch_size().");
+  process.exit(1);
+}
+if (estimateUsesConfigured && !/get_batch_charge_estimate.*get_max_batch_size\(\)/.test(md)) {
+  console.error("\nSTALE: batch-operations table does not list get_max_batch_size() for get_batch_charge_estimate");
+  console.error("  but lib.rs applies the configured limit.");
+  process.exit(1);
+}
+
+// ── Panic-vs-clamp table: verify entrypoints are in the right rows ─────────
+//
+// Validates that the three enforcement behaviours (panic, clamp, no limit)
+// list the same entrypoints the code actually implements.
+
+const lines = md.split("\n");
+const panicEntrypts = (lines.find((l) => /^\|\s*\*\*Panic\*\*/.test(l)) || "").split("|").slice(-2)[0];
+const clampEntrypts = (lines.find((l) => /^\|\s*\*\*Silently clamps\*\*/.test(l)) || "").split("|").slice(-2)[0];
+const noLimitEntrypts = (lines.find((l) => /^\|\s*\*\*No limit\*\*/.test(l)) || "").split("|").slice(-2)[0];
+
+const panicChecks = [
+  ["get_batch_charge_estimate", panicEntrypts],
+  ["batch_charge", panicEntrypts],
+  ["get_next_charge_batch", panicEntrypts],
+  ["get_top_merchants_by_subs", panicEntrypts],
+];
+const clampChecks = [
+  ["get_subscriber_page", clampEntrypts],
+  ["get_active_subscriber_page", clampEntrypts],
+  ["get_charge_history_page", clampEntrypts],
+];
+const noLimitChecks = [
+  ["get_whitelist_page", noLimitEntrypts],
+  ["get_merchant_revenue_history", noLimitEntrypts],
+];
+
+const tableDrift = [];
+for (const [name, row] of panicChecks)
+  if (!row.includes(name)) tableDrift.push(`${name} missing from Panic row`);
+for (const [name, row] of clampChecks)
+  if (!row.includes(name)) tableDrift.push(`${name} missing from Silently-clamps row`);
+for (const [name, row] of noLimitChecks)
+  if (!row.includes(name)) tableDrift.push(`${name} missing from No-limit row`);
+
+if (tableDrift.length) {
+  console.error("\nSTALE: panic-vs-clamp table disagrees with contract entrypoints:");
+  for (const s of tableDrift) console.error(`  ${s}`);
+  process.exit(1);
+}
+
 console.log(`\nOK: all ${DOCUMENTED.length} constants in contract/src/caps.rs match docs/limits.md.`);
