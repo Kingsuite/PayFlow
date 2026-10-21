@@ -124,12 +124,15 @@ pub fn remove_merchant(env: &Env, merchant: &Address) {
             if i != last_idx {
                 // Swap the last entry into the vacated slot.
                 let last_key = DataKey::WhitelistIndex(last_idx);
-                if let Some(last_addr) =
-                    env.storage().persistent().get::<_, Address>(&last_key)
-                {
+                if let Some(last_addr) = env.storage().persistent().get::<_, Address>(&last_key) {
                     env.storage()
                         .persistent()
                         .set(&DataKey::WhitelistIndex(i), &last_addr);
+                    env.storage().persistent().extend_ttl(
+                        &DataKey::WhitelistIndex(i),
+                        1555200,
+                        1555200,
+                    );
                     env.storage()
                         .persistent()
                         .extend_ttl(&DataKey::WhitelistIndex(i), MERCHANT_STATE_TTL_LEDGERS, MERCHANT_STATE_TTL_LEDGERS);
@@ -167,8 +170,7 @@ pub fn remove_merchant(env: &Env, merchant: &Address) {
                                     .persistent()
                                     .extend_ttl(&key, MERCHANT_STATE_TTL_LEDGERS, MERCHANT_STATE_TTL_LEDGERS);
                                 // Also write the reverse index for the moved entry.
-                                let moved_slot_key =
-                                    DataKey::WhitelistIndexSlot(last_addr);
+                                let moved_slot_key = DataKey::WhitelistIndexSlot(last_addr);
                                 env.storage().persistent().set(&moved_slot_key, &i);
                                 env.storage().persistent().extend_ttl(
                                     &moved_slot_key,

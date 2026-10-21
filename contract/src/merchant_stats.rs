@@ -1,8 +1,6 @@
 use soroban_sdk::{Address, Env, Vec};
 
-use crate::caps::{
-    MAX_MERCHANT_SUB_COUNT_BATCH, REVENUE_DAY_PAGE_SIZE, TOP_MERCHANTS_PAGE_SIZE,
-};
+use crate::caps::{MAX_MERCHANT_SUB_COUNT_BATCH, REVENUE_DAY_PAGE_SIZE, TOP_MERCHANTS_PAGE_SIZE};
 use crate::DataKey;
 use crate::MERCHANT_STATE_TTL_LEDGERS;
 

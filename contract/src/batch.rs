@@ -44,11 +44,6 @@ use crate::{DataKey, Subscription};
 /// so existing off-chain parsers that know 0-2 continue to work.
 /// Renaming or reordering discriminants is a breaking change for all consumers.
 /// See `docs/cancel-results.md` for the complete wire encoding specification.
-/// Variants are returned in-order, one per input address. Off-chain consumers
-/// (keepers, indexers) decode this enum from its u32 discriminant. When adding
-/// new variants ALWAYS append at the end so existing parsers continue to
-/// recognise the original codes (0–2). Renaming or reordering is a breaking
-/// change. See the ChargeResult comment above for the full rationale.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum CancelResult {
@@ -58,6 +53,8 @@ pub enum CancelResult {
     NoSubscription,
     /// Subscription was already cancelled.
     AlreadyCancelled,
+    /// Subscription was paused; cancel succeeded but state was unusual.
+    PausedCancelled,
     /// A paused (but active) subscription was cancelled.
     PausedCancelled,
     /// Subscription belongs to a frozen merchant and was cancelled.
@@ -450,6 +447,7 @@ pub fn batch_cancel(env: &Env, users: Vec<Address>) -> Vec<CancelResult> {
                     // for the purpose of this batch guard.
                     CancelResult::AlreadyCancelled
                 } else {
+                    // Check for unusual states before cancelling
                     let was_paused = sub.paused;
                     let merchant_frozen = crate::whitelist::is_frozen(env, &sub.merchant);
 
@@ -473,4 +471,3 @@ pub fn batch_cancel(env: &Env, users: Vec<Address>) -> Vec<CancelResult> {
 
     results
 }
-

@@ -13,9 +13,9 @@ extern crate std;
 
 mod admin;
 mod batch;
-mod caps;
 #[cfg(feature = "bench")]
 mod bench;
+mod caps;
 mod charge_exec;
 mod errors;
 mod events;
@@ -47,8 +47,8 @@ use soroban_sdk::{
     contract, contractimpl, contracttype, token, Address, BytesN, Env, String, Symbol, Vec,
 };
 
-pub use batch::ChargeResult;
 pub use batch::CancelResult;
+pub use batch::ChargeResult;
 pub use charge_exec::ChargeSimResult;
 pub use charge_exec::PayPerUseSimResult;
 
@@ -1186,7 +1186,10 @@ impl FlowPay {
     }
 
     pub fn get_subscription_age(env: Env, user: Address) -> Option<u64> {
-        let sub: Subscription = env.storage().persistent().get(&DataKey::Subscription(user))?;
+        let sub: Subscription = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Subscription(user))?;
 
         if sub.created_at == 0 {
             return None; // sentinel for migrated/unknown subscriptions
@@ -1663,6 +1666,29 @@ impl FlowPay {
             return Vec::new(&env);
         }
         let exclude = exclude_lapsed.unwrap_or(true);
+        let mut i = offset;
+        let end = (offset + limit as u64).min(size);
+        while i < end {
+            if !subscription_count::is_subscriber_index_removed(&env, i) {
+                if let Some(addr) = env
+                    .storage()
+                    .persistent()
+                    .get::<DataKey, Address>(&DataKey::SubscriberIndex(i))
+                {
+                    if let Some(sub) = storage::get_subscription(&env, &addr) {
+                        // sub.active required here: paused subscriptions must not be charged/acted upon —
+                        // this builds a batch of addresses ready for charge(); cancelled and paused
+                        // subscriptions must be excluded so keepers never attempt to charge them.
+                        if sub.active {
+                            if let Some(next) = charge_exec::compute_next_charge_at(&sub) {
+                                let now = env.ledger().timestamp();
+                                if now >= next {
+                                    let grace = grace::get_grace_period(&env);
+                                    let lapsed = grace > 0 && now > next.saturating_add(grace);
+                                    if !exclude || !lapsed {
+                                        result.push_back(addr);
+                                    }
+                                }
         // Delegate bounds, index reads, and tombstone skipping to the shared helper,
         // then apply the charge-due filter at this call site.
         let candidates = subscriber_scan::scan_subscriber_slots(&env, offset, limit as u64);
@@ -2014,8 +2040,12 @@ impl FlowPay {
         events::publish_daily_limit_set(&env, &user, limit);
     }
 
-    /// Returns the daily spending limit for a user, or `None` if not set.
     /// Removes the caller's daily spending cap for `pay_per_use()`.
+    ///
+    /// Clears `DailyLimit`, `DailySpent`, and `DayStart` together, so
+    /// re-setting a limit afterwards starts a fresh window with the spend
+    /// counter reset to zero. This is the supported way to reset daily
+    /// tracking early.
     pub fn remove_daily_limit(env: Env, user: Address) {
         user.require_auth();
         spending_limit::remove_daily_limit(&env, &user);
@@ -2417,7 +2447,10 @@ impl FlowPay {
     ///
     /// No auth required (view-only).
     pub fn get_subscription_token(env: Env, user: Address) -> Option<Address> {
-        let sub: Subscription = env.storage().persistent().get(&DataKey::Subscription(user))?;
+        let sub: Subscription = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Subscription(user))?;
         Some(sub.token)
     }
 
@@ -2731,4 +2764,3 @@ fn ensure_contract_not_paused(env: &Env) {
         env.panic_with_error(ContractError::ContractPaused);
     }
 }
-
