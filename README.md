@@ -4,6 +4,8 @@
 **Branch:** `feat/get-daily-limit`  
 **Status:** ✅ Implemented & tested
 
+> 📚 **Documentation index:** [`docs/README.md`](docs/README.md) — every guide, grouped by task.
+
 ---
 
 ## What This Does
@@ -156,7 +158,7 @@ test test::test_daily_limit_visibility_and_spend_tracking ... ok
 
 ### What is a keeper and how do I run one locally?
 
-A keeper is an off-chain scheduler (cron job, AWS Lambda, or any scripted process) that calls `batch_charge(users)` on the FlowPay contract whenever subscribers' billing intervals have elapsed. Because Soroban has no native scheduler, recurring charges depend entirely on this external trigger. To run one locally, maintain a list of subscriber addresses sourced from contract events and invoke `batch_charge` on a schedule — the contract handles all eligibility checks, so ineligible users are silently skipped without aborting the transaction. See [Architecture — Keeper Service](docs/ARCHITECTURE.md#keeper-service) for the recommended pattern.
+A keeper is an off-chain scheduler (cron job, AWS Lambda, or any scripted process) that calls `batch_charge(users)` on the FlowPay contract whenever subscribers' billing intervals have elapsed. Because Soroban has no native scheduler, recurring charges depend entirely on this external trigger. To run one locally, maintain a list of subscriber addresses sourced from contract events and invoke `batch_charge` on a schedule — the contract handles all eligibility checks, so ineligible users are silently skipped without aborting the transaction. See the [Keeper runbook](docs/KEEPER.md) for the recommended pattern.
 
 ### How do I spin up a local validation environment for testing?
 
@@ -176,7 +178,7 @@ An optional trial duration (in seconds) is passed as `trial_period: Option<u64>`
 
 ### How does the grace period work?
 
-The grace period is a **contract-wide** setting (set by admin via `set_grace_period(seconds)`) that defines how long after a billing interval elapses a charge can still be successfully submitted. Concretely, `charge()` will accept a call only within the window `[last_charged + interval, last_charged + interval + grace_period]`; calls after that window panic with `"grace period elapsed"`. In `batch_charge`, users whose grace window has closed are returned as `ChargeResult::GracePeriodElapsed` without aborting the batch. The default is 0 (no grace period). Details are in [`contract/src/grace.rs`](contract/src/grace.rs) and [`docs/API.md`](docs/API.md#set_grace_period).
+The grace period is a **contract-wide** setting (set by admin via the two-step `propose_grace_period(seconds)` / `commit_grace_period()`) that defines how long after a billing interval elapses a charge can still be successfully submitted. Concretely, `charge()` will accept a call only within the window `[last_charged + interval, last_charged + interval + grace_period]`; calls after that window panic with `"grace period elapsed"`. In `batch_charge`, users whose grace window has closed are returned as `ChargeResult::GracePeriodElapsed` without aborting the batch. The default is 0 (no grace period). Details are in [`contract/src/grace.rs`](contract/src/grace.rs) and [`docs/API.md`](docs/API.md#propose_grace_period).
 
 ### How are contract upgrades and storage migrations handled?
 
@@ -188,7 +190,7 @@ FlowPay is **currently deployed on Testnet only** and has not been formally audi
 
 ### Why is `charge()` permissionless — isn't that a security risk?
 
-`charge()` has no `require_auth()` check by design, so any account (including a keeper bot) can trigger a charge without holding user keys. The contract enforces correctness independently: the subscription must exist, `active` must be `true`, and the billing interval must have elapsed — if any condition fails, the transaction panics and no funds move. Because the token transfer uses `transfer_from` against a pre-approved allowance, FlowPay can never move more than the user explicitly approved. This is covered in detail under [Security Model](docs/SECURITY.md#why-charge-is-permissionless) and [Architecture — Why charge() has no auth](docs/ARCHITECTURE.md#why-charge-has-no-auth).
+`charge()` has no `require_auth()` check by design, so any account (including a keeper bot) can trigger a charge without holding user keys. The contract enforces correctness independently: the subscription must exist, `active` must be `true`, and the billing interval must have elapsed — if any condition fails, the transaction panics and no funds move. Because the token transfer uses `transfer_from` against a pre-approved allowance, FlowPay can never move more than the user explicitly approved. This is covered in detail under [Security — Auth Model](docs/SECURITY.md#auth-model).
 
 ### How does the daily spending limit work for `pay_per_use`?
 
@@ -216,6 +218,8 @@ Stellar's Soroban platform uses state archiving — persistent storage entries h
 - `remove_daily_limit(user)` — clears the cap
 - `get_daily_spent(user)` — returns how much has been spent today
 - `pay_per_use(user, amount)` — the function this limit applies to
+- Documentation index: [`docs/README.md`](docs/README.md)
+- Project structure: [`docs/STRUCTURE.md`](docs/STRUCTURE.md)
 - Full API reference: [`docs/API.md`](docs/API.md)
 - Architecture overview: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - Referral system (canonical): [`docs/REFERRALS.md`](docs/REFERRALS.md)
@@ -228,6 +232,8 @@ Stellar's Soroban platform uses state archiving — persistent storage entries h
 For when something needs doing to a live deployment:
 
 - [Keeper runbook](docs/KEEPER.md) - runtime, flags and configuration for `keeper.ts`
+- [Troubleshooting runbook](docs/operations/troubleshooting.md) - diagnosing `ChargeResult` errors, wallet failures, RPC failures and other operational issues
+- [Scripts environment reference](docs/scripts-environment.md) - every environment variable the scripts read, with defaults
 - [Charge outcome encoding](docs/charge-results.md) - what a `ChargeResult` is on the wire, and what the DLQ and export tooling should do with it
 - [Batch and pagination caps](docs/limits.md) - every size limit the contract enforces
 - [Operator scripts](scripts/README.md#undocumented-operator-scripts) - the maintenance tools: allowance alerts, churn analysis, migration, merchant onboarding, renewal forecasts, metrics
