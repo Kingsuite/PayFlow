@@ -74,10 +74,6 @@ function toDateStr(ts: number): string {
 function main() {
   const dbPath = getArg("--db");
   if (!dbPath) {
-    console.error("--db <path> required");
-    process.exit(1);
-  }
-  if (!dbPath) {
     logger.error("--db <path> required");
     process.exit(1);
   }

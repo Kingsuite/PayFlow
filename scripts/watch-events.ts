@@ -35,10 +35,6 @@ const webhookConfig: WebhookConfig | null = WEBHOOK_URL && WEBHOOK_SECRET
   : null;
 
 if (!CONTRACT_ID) {
-  console.error("Error: CONTRACT_ID environment variable is required");
-  console.error(
-    "Usage: CONTRACT_ID=your_contract_id RPC_URL=https://... tsx watch-events.ts",
-  );
   logger.error("Error: CONTRACT_ID environment variable is required");
   logger.error("Usage: CONTRACT_ID=your_contract_id RPC_URL=https://... tsx watch-events.ts");
   process.exit(1);
