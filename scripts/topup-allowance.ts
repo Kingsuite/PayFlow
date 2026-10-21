@@ -62,6 +62,7 @@ import {
   BASE_FEE,
 } from "@stellar/stellar-sdk";
 import { Api } from "@stellar/stellar-sdk/rpc";
+import { fileURLToPath } from "node:url";
 import { MultiEndpointServer } from "./rpc-client.js";
 import { logger } from "./logger.js";
 import {
@@ -526,9 +527,11 @@ async function main(): Promise<void> {
   );
 }
 
-// Guard: only run as a CLI entry point, not when imported by tests.
-// `import.meta.url` will match `process.argv[1]` only when executed directly.
-const isMain = process.argv[1]?.includes("topup-allowance");
+// Guard: only run as a CLI entry point, not when imported by tests (e.g.
+// `topup-allowance.test.ts`, whose path contains "topup-allowance").
+// `process.argv[1]` matches `fileURLToPath(import.meta.url)` only when this
+// file is executed directly (`tsx topup-allowance.ts`).
+const isMain = process.argv[1] === fileURLToPath(import.meta.url);
 if (isMain) {
   main().catch((err: unknown) => {
     logger.error(`Fatal: ${err instanceof Error ? err.message : String(err)}`);
