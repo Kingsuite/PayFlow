@@ -114,7 +114,9 @@ This document tracks the current public contract surface in [contract/src/lib.rs
 
 ## Bounded API delta (Issue 110)
 
-This revision documents only the following symbols against `contract/src/lib.rs`, `contract/src/charge_exec.rs`, `contract/src/batch.rs`, `contract/src/fee.rs`, `contract/src/errors.rs`, and `contract/src/storage.rs`. It is **not** a full API audit.
+**NOTE:** This document now provides complete coverage of all 130 public contract entrypoints exposed by `#[contractimpl]`. The previous scoping note referenced below has been superseded by this comprehensive revision.
+
+Previous partial coverage tracked these symbols from Issue 110:
 
 - [x] `contract_health_check`
 - [x] `HealthReport`
@@ -129,8 +131,6 @@ This revision documents only the following symbols against `contract/src/lib.rs`
 - [x] `get_active_subscriber_page`
 
 Related ops: [`EVENTS.md`](./EVENTS.md) (`paused`, `subscription_auto_resumed`, `charged`, `batch_charge_skips`), [`KEEPER.md`](./KEEPER.md) (`batch_charge`), [`MAINNET-DEPLOYMENT.md`](./MAINNET-DEPLOYMENT.md) (fee bounds / health gates).
-
----
 
 ## Data Types
 
@@ -341,6 +341,112 @@ pub enum DataKey {
   PendingGracePeriod,
 }
 ```
+
+### `SubscriptionHealth`
+
+Returned by [`get_subscription_health`](#get_subscription_health). Provides composite health checks in one call for frontend UIs.
+
+```rust
+pub struct SubscriptionHealth {
+  pub active: bool,
+  pub charge_due: bool,
+  pub within_grace: bool,
+  pub has_sufficient_allowance: bool,
+  pub is_paused: bool,
+  pub trial_active: bool,
+  pub daily_limit_set: bool,
+}
+```
+
+| Field                       | Type   | Meaning                                                                |
+| --------------------------- | ------ | ---------------------------------------------------------------------- |
+| `active`                    | `bool` | Subscription is active (not cancelled)                                 |
+| `charge_due`                | `bool` | Current time ≥ next charge time (eligible for charging now)            |
+| `within_grace`              | `bool` | If overdue, still within grace period window                           |
+| `has_sufficient_allowance`  | `bool` | Token allowance covers subscription amount                             |
+| `is_paused`                 | `bool` | Subscription is paused (user or admin pause)                           |
+| `trial_active`              | `bool` | Currently in trial period (first charge not yet due)                   |
+| `daily_limit_set`           | `bool` | User has configured a daily spending limit                             |
+
+Returns default/zero values when no subscription exists (all fields `false`). See [`SUBSCRIBER-LIFECYCLE.md`](./SUBSCRIBER-LIFECYCLE.md) and [`docs/frontend/components.md`](./frontend/components.md) for UI integration patterns.
+
+### `DailyLimitStatus`
+
+Returned by [`get_daily_limit_status`](#get_daily_limit_status). Provides consistent snapshot of daily spending window from one storage read.
+
+```rust
+pub struct DailyLimitStatus {
+  pub limit: Option<i128>,
+  pub spent: i128,
+  pub day_start: Option<u64>,
+  pub remaining: Option<i128>,
+}
+```
+
+| Field        | Type            | Meaning                                                                 |
+| ------------ | --------------- | ----------------------------------------------------------------------- |
+| `limit`      | `Option<i128>`  | Configured daily limit in stroops, or `None` if no limit set            |
+| `spent`      | `i128`          | Amount spent in current 24h window (0 if no spending yet)               |
+| `day_start`  | `Option<u64>`   | Unix timestamp of current window start, or `None` if no spending yet    |
+| `remaining`  | `Option<i128>`  | `limit - spent` (clamped ≥ 0), or `None` if no limit set                |
+
+See [`DAILY-LIMITS.md`](./DAILY-LIMITS.md) for spending-limit mechanics and TTL behavior.
+
+### `ContractConfig`
+
+Returned by [`get_contract_config`](#get_contract_config). Snapshot of contract-wide configuration settings.
+
+```rust
+pub struct ContractConfig {
+  pub fee_bps: u32,
+  pub fee_collector: Option<Address>,
+  pub grace_period: u64,
+  pub min_interval: u64,
+  pub max_batch_size: u32,
+  pub global_volume_cap: i128,
+  pub whitelist_enabled: bool,
+  pub paused: bool,
+  pub schema_version: u32,
+}
+```
+
+| Field                | Type              | Meaning                                                           |
+| -------------------- | ----------------- | ----------------------------------------------------------------- |
+| `fee_bps`            | `u32`             | Protocol fee in basis points (0-10000); 100 bps = 1%              |
+| `fee_collector`      | `Option<Address>` | Address receiving protocol fees, or `None` if fee not configured  |
+| `grace_period`       | `u64`             | Seconds after due time before subscription lapses                 |
+| `min_interval`       | `u64`             | Minimum allowed subscription interval (seconds)                   |
+| `max_batch_size`     | `u32`             | Configured batch charge cap (default 50, ceiling 200)             |
+| `global_volume_cap`  | `i128`            | Effective hourly volume cap (override or default 50T stroops)     |
+| `whitelist_enabled`  | `bool`            | Whether merchant whitelist enforcement is active                  |
+| `paused`             | `bool`            | Contract-wide pause flag (admin circuit breaker)                  |
+| `schema_version`     | `u32`             | Migration schema version                                          |
+
+Useful for frontend config caching and keeper initialization.
+
+### `CancelResult`
+
+Returned by [`batch_cancel`](#batch_cancel). Encodes the outcome for each address in the batch.
+
+```rust
+pub enum CancelResult {
+  Cancelled,
+  NoSubscription,
+  AlreadyCancelled,
+  PausedCancelled,
+  MerchantFrozen,
+}
+```
+
+| Variant            | Meaning                                                              |
+| ------------------ | -------------------------------------------------------------------- |
+| `Cancelled`        | Subscription was active and cancelled successfully                   |
+| `NoSubscription`   | No subscription found for this address                               |
+| `AlreadyCancelled` | Subscription already inactive (previously cancelled)                 |
+| `PausedCancelled`  | Subscription was paused; cancel succeeded but state was unusual      |
+| `MerchantFrozen`   | Subscription's merchant was frozen; cancel succeeded but unusual state |
+
+Wire encoding: discriminant `u32` (0=Cancelled, 1=NoSubscription, 2=AlreadyCancelled, 3=PausedCancelled, 4=MerchantFrozen). **Append-only invariant:** new variants must be appended to preserve off-chain parser compatibility. See [`docs/cancel-results.md`](./cancel-results.md).
 
 ---
 
@@ -575,6 +681,55 @@ CLI example:
 
 ```bash
 soroban contract invoke --id <CONTRACT_ID> --source <USER_KEY> --network testnet -- pay_per_use --user <USER_ADDRESS> --amount 1000000
+```
+
+### `pay_per_use_to`
+
+Immediate pay-per-use charge that routes payment to an explicit `recipient` instead of the subscription's merchant. Shares the user's daily spending limit and allowance budget with `pay_per_use`.
+
+```
+pay_per_use_to(env: Env, user: Address, amount: i128, recipient: Address)
+```
+
+| Name        | Type      | Description                                                      |
+| ----------- | --------- | ---------------------------------------------------------------- |
+| `user`      | `Address` | Subscriber and transaction signer.                               |
+| `amount`    | `i128`    | One-time payment amount in stroops.                              |
+| `recipient` | `Address` | Address receiving the net payment (after protocol fee if configured). |
+
+**Auth:** `user.require_auth()`.
+
+**Returns:** `()`.
+
+**Errors:**
+
+| Condition                                                           | Code | Symbol                   |
+| ------------------------------------------------------------------- | ---- | ------------------------ |
+| `amount <= 0`                                                       | 2    | `AmountMustBePositive`   |
+| `amount > MAX_AMOUNT`                                               | 15   | `AmountExceedsMaximum`   |
+| No subscription for `user`                                          | 4    | `NoSubscriptionFound`    |
+| Subscription is cancelled                                           | 5    | `SubscriptionInactive`   |
+| Subscription is paused                                              | 17   | `SubscriptionPaused`     |
+| Contract paused                                                     | 18   | `ContractPaused`         |
+| Allowance insufficient                                              | 8    | `InsufficientAllowance`  |
+| Daily limit exceeded                                                | 25   | `DailyLimitExceeded`     |
+| `recipient` is the contract's own address                           | 32   | `InvalidRecipient`       |
+| Whitelist enabled and `recipient` not whitelisted                   | 10   | `MerchantNotWhitelisted` |
+
+**Side Effects:**
+
+- Transfers `amount` from `user` to `recipient` (after protocol fee split if configured).
+- Updates `recipient`'s merchant revenue tracking (not the subscription's merchant).
+- Increments user's daily spend counter.
+- Emits `pay_per_use` event with `recipient` in place of `sub.merchant`.
+
+**Use cases:**  
+Multi-merchant marketplaces, tipping, service routing. See [MERCHANT-INTEGRATION.md § 4](./MERCHANT-INTEGRATION.md#4-marketplace--multi-merchant-routing), [INTEGRATION-GUIDE.md § pay_per_use_to](./INTEGRATION-GUIDE.md), and [MULTI-TOKEN.md](./MULTI-TOKEN.md).
+
+CLI example:
+
+```bash
+soroban contract invoke --id <CONTRACT_ID> --source <USER_KEY> --network testnet -- pay_per_use_to --user <USER_ADDRESS> --amount 1000000 --recipient <RECIPIENT_ADDRESS>
 ```
 
 ### `cancel`
@@ -2402,6 +2557,55 @@ soroban contract invoke \
   --user <USER_ADDRESS>
 ```
 
+### `get_subscription_health`
+
+Read-only composite health check. Returns a [`SubscriptionHealth`](#subscriptionhealth) struct with pre-computed boolean flags for common subscription state queries, enabling frontend UIs to make one call instead of seven.
+
+```
+get_subscription_health(env: Env, user: Address) -> SubscriptionHealth
+```
+
+**Parameters**
+
+| Name   | Type      | Description                        |
+| ------ | --------- | ---------------------------------- |
+| `user` | `Address` | The subscriber address to query.   |
+
+**Auth:** None.
+
+**Returns:** [`SubscriptionHealth`](#subscriptionhealth) struct with fields:
+
+| Field                       | Type   | Meaning                                                         |
+| --------------------------- | ------ | --------------------------------------------------------------- |
+| `active`                    | `bool` | Subscription is active (not cancelled)                          |
+| `charge_due`                | `bool` | Current time ≥ next charge time (eligible for charging now)     |
+| `within_grace`              | `bool` | If overdue, still within grace period window                    |
+| `has_sufficient_allowance`  | `bool` | Token allowance covers subscription amount                      |
+| `is_paused`                 | `bool` | Subscription is paused (user or admin pause)                    |
+| `trial_active`              | `bool` | Currently in trial period (first charge not yet due)            |
+| `daily_limit_set`           | `bool` | User has configured a daily spending limit                      |
+
+**Behavior when no subscription exists:** Returns default struct with all fields `false`.
+
+**Use cases:**  
+- Frontend dashboard health indicators  
+- Keeper pre-flight checks before charge attempts  
+- Support tooling triage  
+
+Equivalent to calling `get_subscription`, `next_charge_at`, `get_trial_end`, token contract `allowance`, `get_grace_period`, and `get_daily_limit` separately, but more efficient and atomic.
+
+**See also:** [`SUBSCRIBER-LIFECYCLE.md`](./SUBSCRIBER-LIFECYCLE.md) for subscription state machine; [`docs/frontend/components.md`](./frontend/components.md) for UI integration patterns.
+
+**CLI example**
+
+```bash
+soroban contract invoke \
+  --id <CONTRACT_ID> \
+  --network testnet \
+  -- get_subscription_health \
+  --user <USER_ADDRESS>
+```
+
 ---
 
 ### `next_charge_at`
@@ -2642,6 +2846,48 @@ soroban contract invoke \
   --id <CONTRACT_ID> \
   --network testnet \
   -- get_daily_spent \
+  --user <USER_ADDRESS>
+```
+
+### `get_daily_limit_status`
+
+Read-only composite view. Returns all daily spending fields from one consistent snapshot of temporary storage: the configured limit, today's spend, the window start, and remaining budget.
+
+```
+get_daily_limit_status(env: Env, user: Address) -> DailyLimitStatus
+```
+
+**Parameters**
+
+| Name   | Type      | Description                      |
+| ------ | --------- | -------------------------------- |
+| `user` | `Address` | The subscriber address to query. |
+
+**Auth:** None.
+
+**Returns:** [`DailyLimitStatus`](#dailylimitstatus) struct with fields:
+
+| Field        | Type            | Meaning                                                                     |
+| ------------ | --------------- | --------------------------------------------------------------------------- |
+| `limit`      | `Option<i128>`  | Configured daily limit in stroops, or `None` if no limit set                |
+| `spent`      | `i128`          | Amount spent in current 24h window (0 if no spending yet)                   |
+| `day_start`  | `Option<u64>`   | Unix timestamp of current window start, or `None` if no spending yet        |
+| `remaining`  | `Option<i128>`  | `limit - spent` (clamped ≥ 0), or `None` if no limit set                    |
+
+**Use cases:**  
+Frontend UIs displaying spending status, keeper pre-flight checks before `pay_per_use` attempts. Provides a consistent read of the daily limit state without requiring separate calls to `get_daily_limit`, `get_daily_spent`, and `get_day_start`.
+
+**Storage reads:** Temporary storage `DailyLimit(user)`, `DailySpent(user)`, `DayStart(user)`.
+
+**See also:** [`DAILY-LIMITS.md`](./DAILY-LIMITS.md) for spending-limit mechanics and TTL behavior; [`docs/frontend/components.md`](./frontend/components.md) for UI integration patterns.
+
+**CLI example**
+
+```bash
+soroban contract invoke \
+  --id <CONTRACT_ID> \
+  --network testnet \
+  -- get_daily_limit_status \
   --user <USER_ADDRESS>
 ```
 
