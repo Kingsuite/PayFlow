@@ -44,6 +44,12 @@ pub const MAX_WHITELIST_BATCH_SIZE: u32 = 50;
 /// (`get_merchant_sub_counts`).
 pub const MAX_MERCHANT_SUB_COUNT_BATCH: u32 = 50;
 
+/// Cap on the `days` vector accepted by the admin
+/// `prune_merchant_revenue_days` entrypoint. Matches the per-merchant
+/// day-index retention cap (`MAX_RETAINED_REVENUE_DAYS`), so one call can
+/// prune every retained day.
+pub const MAX_PRUNE_REVENUE_DAYS: u32 = 90;
+
 /// Page size cap for the subscriber-listing entrypoints
 /// (`get_subscriber_page`, `get_active_subscriber_page`, `get_next_charge_batch`).
 ///

@@ -1546,6 +1546,7 @@ impl FlowPay {
     }
 
     /// Prunes missing or expired daily revenue buckets safely. Admin only.
+    /// Panics with `BatchTooLarge` when `days` exceeds `MAX_PRUNE_REVENUE_DAYS`.
     pub fn prune_merchant_revenue_days(env: Env, merchant: Address, days: Vec<u64>) {
         let removed = days.len();
         merchant_stats::prune_merchant_revenue_days(&env, &merchant, days);
@@ -1929,13 +1930,16 @@ impl FlowPay {
         events::publish_merchant_withdrawal(&env, &merchant, amount);
     }
 
-    /// Returns per-charge revenue entries for the merchant (up to `days` most recent).
-    /// Oldest -> newest. Returns an empty Vec when no history has been recorded or after clearing.
+    /// Returns per-charge revenue entries for the merchant (up to `days` most recent,
+    /// from a history capped at `MAX_REVENUE_HISTORY` entries). Oldest -> newest.
+    /// Returns an empty Vec when no history has been recorded or after clearing.
     pub fn get_merchant_revenue_history(env: Env, merchant: Address, days: u32) -> Vec<i128> {
         merchant_stats::get_merchant_revenue_history(&env, &merchant, days)
     }
 
     /// Returns aggregate revenue statistics for a merchant: (total, count, min_charge, max_charge).
+    /// `total` is all-time; `count`/`min_charge`/`max_charge` cover the retained history
+    /// window (at most `MAX_REVENUE_HISTORY` most recent charges).
     pub fn get_merchant_revenue_summary(env: Env, merchant: Address) -> (i128, i128, i128, i128) {
         merchant_stats::get_merchant_revenue_summary(&env, &merchant)
     }
@@ -2051,9 +2055,6 @@ impl FlowPay {
     /// Stored in temporary storage; resets automatically after ~1 day.
     pub fn set_daily_limit(env: Env, user: Address, limit: i128) {
         user.require_auth();
-        if limit <= 0 {
-            env.panic_with_error(ContractError::AmountMustBePositive);
-        }
         spending_limit::set_daily_limit(&env, &user, limit);
         events::publish_daily_limit_set(&env, &user, limit);
     }
@@ -2646,8 +2647,7 @@ fn subscribe_inner(
     validation::require_valid_amount(env, amount);
     validation::validate_interval(env, interval);
 
-    use soroban_sdk::xdr::ToXdr;
-    if token.clone().to_xdr(env).get(7) == Some(0) {
+    if !validation::is_contract_address(&token) {
         env.panic_with_error(ContractError::InvalidTokenAddress);
     }
 

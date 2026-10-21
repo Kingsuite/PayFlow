@@ -15923,6 +15923,7 @@ fn test_legacy_paused_subscription_remains_listed() {
 
     // Sanity: user is in the active page before we mutate the row.
     let page_before = client.get_active_subscriber_page(&0u64, &10u32);
+    assert!(page_before.contains(&user), "user must be listed before mutation");
     assert!(
         page_before.contains(&user),
         "user must be listed before mutation"
@@ -15949,6 +15950,7 @@ fn test_legacy_paused_subscription_remains_listed() {
     // Confirm the raw stored state.
     let raw = client.get_subscription(&user).unwrap();
     assert!(!raw.active, "raw active must be false (legacy state)");
+    assert!(raw.paused,  "raw paused must be true (legacy state)");
     assert!(raw.paused, "raw paused must be true (legacy state)");
 
     // Design invariant: get_active_subscriber_page uses sub.active, so a
@@ -16301,6 +16303,28 @@ fn test_clear_metadata_emits_exactly_one_publisher() {
             }
         }
     }
+    assert_eq!(count, 1, "exactly one metadata_cleared event must be emitted");
+}
+
+/// Complementary: a truly cancelled row (active=false, paused=false) must
+/// NOT appear in get_active_subscriber_page. This confirms that the active
+/// page excludes both cancelled and legacy paused rows.
+#[test]
+fn test_cancelled_subscription_not_listed() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+
+    client.subscribe(
+        &user,
+        &merchant,
+        &1_0000000,
+        &86400,
+        &token_addr,
+        &None,
+        &None,
+    );
+
+    // Cancel through the normal path — active=false, paused=false.
     assert_eq!(
         count, 1,
         "exactly one metadata_cleared event must be emitted"
@@ -16378,4 +16402,208 @@ fn test_scan_offset_past_end_returns_empty() {
 
     let batch = client.get_next_charge_batch(&1u64, &10u32, &None);
     assert_eq!(batch.len(), 0, "get_next_charge_batch: offset at size must return empty");
+}
+
+// ─────────────────────────────────────────────────────────────
+// Issue #1212: prune_merchant_revenue_days input cap and index walk
+// ─────────────────────────────────────────────────────────────
+
+#[test]
+#[should_panic(expected = "Error(Contract, #20)")]
+fn test_prune_merchant_revenue_days_over_cap_panics() {
+    let (env, contract_id, _token_addr, _user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    install_admin(&env, &contract_id);
+
+    let mut days: Vec<u64> = Vec::new(&env);
+    for d in 0..(caps::MAX_PRUNE_REVENUE_DAYS as u64 + 1) {
+        days.push_back(d);
+    }
+    client.prune_merchant_revenue_days(&merchant, &days);
+}
+
+#[test]
+fn test_prune_merchant_revenue_days_at_cap_unsorted_compacts_index() {
+    let (env, contract_id, _token_addr, _user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    install_admin(&env, &contract_id);
+
+    // Index holds days 0..90; every day has a bucket.
+    env.as_contract(&contract_id, || {
+        let mut index: Vec<u64> = Vec::new(&env);
+        for d in 0..90u64 {
+            index.push_back(d);
+            env.storage()
+                .persistent()
+                .set(&DataKey::MerchantRevenueDay(merchant.clone(), d), &1i128);
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::MerchantRevenueDayIndex(merchant.clone()), &index);
+    });
+
+    // Exactly the cap, in descending order: prune every odd day plus
+    // days that are not in the index at all.
+    let mut days: Vec<u64> = Vec::new(&env);
+    for d in (0..90u64).rev().filter(|d| d % 2 == 1) {
+        days.push_back(d);
+    }
+    for d in 1000..(1000 + caps::MAX_PRUNE_REVENUE_DAYS as u64 - days.len() as u64) {
+        days.push_back(d);
+    }
+    assert_eq!(days.len(), caps::MAX_PRUNE_REVENUE_DAYS);
+    client.prune_merchant_revenue_days(&merchant, &days);
+
+    let index: Vec<u64> = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get(&DataKey::MerchantRevenueDayIndex(merchant.clone()))
+            .unwrap()
+    });
+    assert_eq!(index.len(), 45);
+    for (i, d) in index.iter().enumerate() {
+        assert_eq!(d, 2 * i as u64);
+    }
+    assert_eq!(client.get_merchant_revenue_day(&merchant, &1), 0);
+    assert_eq!(client.get_merchant_revenue_day(&merchant, &2), 1);
+}
+
+// ─────────────────────────────────────────────────────────────
+// Issue #1214: MerchantRevenueHistory is a bounded ring buffer
+// ─────────────────────────────────────────────────────────────
+
+fn record_merchant_revenue(env: &Env, contract_id: &Address, merchant: &Address, amounts: &[i128]) {
+    env.as_contract(contract_id, || {
+        for amount in amounts {
+            merchant_stats::increment_revenue_with_daily(env, merchant, *amount);
+        }
+    });
+}
+
+#[test]
+fn test_merchant_revenue_history_trims_oldest_at_cap() {
+    let (env, contract_id, _token_addr, _user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    let cap = merchant_stats::MAX_REVENUE_HISTORY;
+
+    // Fill exactly to the cap: nothing is trimmed yet.
+    let amounts: std::vec::Vec<i128> = (1..=cap as i128).collect();
+    record_merchant_revenue(&env, &contract_id, &merchant, &amounts);
+    let history = client.get_merchant_revenue_history(&merchant, &(cap + 10));
+    assert_eq!(history.len(), cap);
+    assert_eq!(history.get(0).unwrap(), 1);
+
+    // One more append drops the oldest entry.
+    record_merchant_revenue(&env, &contract_id, &merchant, &[cap as i128 + 1]);
+    let history = client.get_merchant_revenue_history(&merchant, &(cap + 10));
+    assert_eq!(history.len(), cap);
+    assert_eq!(history.get(0).unwrap(), 2);
+    assert_eq!(history.get(cap - 1).unwrap(), cap as i128 + 1);
+
+    // A smaller window returns only the newest entries.
+    let window = client.get_merchant_revenue_history(&merchant, &3);
+    assert_eq!(
+        window,
+        soroban_sdk::vec![&env, cap as i128 - 1, cap as i128, cap as i128 + 1]
+    );
+}
+
+#[test]
+fn test_merchant_revenue_summary_min_max_after_trim() {
+    let (env, contract_id, _token_addr, _user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    let cap = merchant_stats::MAX_REVENUE_HISTORY;
+
+    // The extreme values are the oldest entries, then the cap is filled with 50s.
+    let mut amounts: std::vec::Vec<i128> = std::vec![1, 1_000];
+    amounts.extend(core::iter::repeat(50).take(cap as usize));
+    record_merchant_revenue(&env, &contract_id, &merchant, &amounts);
+
+    let total: i128 = amounts.iter().sum();
+    // Total stays all-time; count/min/max cover only the retained window.
+    assert_eq!(
+        client.get_merchant_revenue_summary(&merchant),
+        (total, cap as i128, 50, 50)
+    );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Issue #1213: set_daily_limit validation and overflow-safe accumulation
+// ─────────────────────────────────────────────────────────────
+
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")]
+fn test_set_daily_limit_zero_rejected() {
+    let (env, contract_id, _token_addr, user, _merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    client.set_daily_limit(&user, &0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")]
+fn test_set_daily_limit_negative_rejected() {
+    let (env, contract_id, _token_addr, user, _merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    client.set_daily_limit(&user, &-1);
+}
+
+#[test]
+fn test_daily_limit_exact_limit_spend_allowed() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    client.subscribe(&user, &merchant, &1_0000000, &86400, &token_addr, &None, &None);
+    client.set_daily_limit(&user, &5_0000000);
+    client.pay_per_use(&user, &2_0000000);
+    client.pay_per_use(&user, &3_0000000);
+    let status = client.get_daily_limit_status(&user);
+    assert_eq!(status.spent, 5_0000000);
+    assert_eq!(status.remaining, Some(0));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #25)")]
+fn test_daily_limit_over_limit_spend_rejected() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    client.subscribe(&user, &merchant, &1_0000000, &86400, &token_addr, &None, &None);
+    client.set_daily_limit(&user, &5_0000000);
+    client.pay_per_use(&user, &5_0000000);
+    client.pay_per_use(&user, &1);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #36)")]
+fn test_daily_limit_enforce_overflow_is_typed() {
+    let (env, contract_id, _token_addr, user, _merchant) = setup();
+    env.as_contract(&contract_id, || {
+        spending_limit::set_daily_limit(&env, &user, i128::MAX);
+        spending_limit::record_spend(&env, &user, i128::MAX);
+        spending_limit::enforce_limit(&env, &user, 1);
+    });
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #36)")]
+fn test_daily_limit_record_spend_overflow_is_typed() {
+    let (env, contract_id, _token_addr, user, _merchant) = setup();
+    env.as_contract(&contract_id, || {
+        spending_limit::record_spend(&env, &user, i128::MAX);
+        spending_limit::record_spend(&env, &user, 1);
+    });
+}
+
+// ─────────────────────────────────────────────────────────────
+// Issue #1211: token address kind check without the XDR byte probe
+// ─────────────────────────────────────────────────────────────
+
+#[test]
+fn test_is_contract_address_distinguishes_kinds() {
+    let (env, contract_id, token_addr, _user, _merchant) = setup();
+    use soroban_sdk::xdr::{AccountId, PublicKey, ScAddress, Uint256};
+    let account_id = AccountId(PublicKey::PublicKeyTypeEd25519(Uint256([0; 32])));
+    let account = Address::try_from_val(&env, &ScAddress::Account(account_id)).unwrap();
+
+    assert!(validation::is_contract_address(&token_addr));
+    assert!(validation::is_contract_address(&contract_id));
+    assert!(!validation::is_contract_address(&account));
 }

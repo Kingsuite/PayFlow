@@ -15,7 +15,13 @@ pub fn get_daily_limit(env: &Env, user: &Address) -> Option<i128> {
 
 /// Sets (or overwrites) the daily spending limit for a user.
 /// The entry lives in temporary storage with a TTL of ~1 day.
+///
+/// Panics with `AmountMustBePositive` when `limit <= 0`, so every stored limit
+/// is positive (the invariant `get_daily_limit_status` relies on).
 pub fn set_daily_limit(env: &Env, user: &Address, limit: i128) {
+    if limit <= 0 {
+        env.panic_with_error(crate::errors::ContractError::AmountMustBePositive);
+    }
     let key = DataKey::DailyLimit(user.clone());
     env.storage().temporary().set(&key, &limit);
     env.storage()
@@ -100,7 +106,10 @@ pub fn record_spend(env: &Env, user: &Address, amount: i128) {
         crate::events::publish_daily_window_started(env, user);
     }
 
-    env.storage().temporary().set(&spent_key, &(spent + amount));
+    let new_spent = spent
+        .checked_add(amount)
+        .unwrap_or_else(|| env.panic_with_error(crate::errors::ContractError::ArithmeticOverflow));
+    env.storage().temporary().set(&spent_key, &new_spent);
     env.storage()
         .temporary()
         .extend_ttl(&spent_key, LEDGERS_PER_DAY, LEDGERS_PER_DAY);
@@ -111,7 +120,10 @@ pub fn record_spend(env: &Env, user: &Address, amount: i128) {
 pub fn enforce_limit(env: &Env, user: &Address, amount: i128) {
     if let Some(limit) = get_daily_limit(env, user) {
         let spent = get_daily_spent(env, user);
-        if spent + amount > limit {
+        let new_spent = spent.checked_add(amount).unwrap_or_else(|| {
+            env.panic_with_error(crate::errors::ContractError::ArithmeticOverflow)
+        });
+        if new_spent > limit {
             env.panic_with_error(crate::errors::ContractError::DailyLimitExceeded);
         }
     }
