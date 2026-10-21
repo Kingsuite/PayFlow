@@ -33,16 +33,12 @@ import {
   xdr,
   scValToNative,
 } from "@stellar/stellar-sdk";
-import { Server } from "@stellar/stellar-sdk/rpc";
+import { MultiEndpointServer } from "./rpc-client.js";
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
 const CONTRACT_ID =
   process.env.CONTRACT_ID ?? process.env.VITE_CONTRACT_ID ?? "";
-const RPC_URL =
-  process.env.RPC_URL ??
-  process.env.VITE_RPC_URL ??
-  "https://soroban-testnet.stellar.org";
 const NETWORK_PASSPHRASE =
   process.env.NETWORK_PASSPHRASE ??
   process.env.VITE_NETWORK_PASSPHRASE ??
@@ -119,7 +115,7 @@ Environment:
 
 // ── Contract helpers ─────────────────────────────────────────────────────────
 
-const server = new Server(RPC_URL);
+const server = new MultiEndpointServer();
 
 function addressVal(addr: string): xdr.ScVal {
   return nativeToScVal(Address.fromString(addr), { type: "address" });
