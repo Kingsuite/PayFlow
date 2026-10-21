@@ -52,6 +52,10 @@
  * | RPC_URL            | no       | Soroban RPC endpoint (default: testnet)                  |
  * | NETWORK_PASSPHRASE | no       | Network passphrase (default: testnet)                    |
  * | LOG_LEVEL          | no       | debug \| info \| warn \| error (default: info)           |
+ *
+ * `USER_SECRET` is never logged. Every message this script emits goes through
+ * the shared redacting logger (`logger.ts`), which masks secret material
+ * before it reaches stdout.
  */
 
 import {
@@ -64,7 +68,7 @@ import {
 import { Api } from "@stellar/stellar-sdk/rpc";
 import { fileURLToPath } from "node:url";
 import { MultiEndpointServer } from "./rpc-client.js";
-import { logger } from "./logger.js";
+import { logger, redactSecrets } from "./logger.js";
 import {
   encodeU128,
   encodeAddress,
@@ -237,7 +241,7 @@ export async function topupAllowance(
     const ledgerInfo = await server.getLatestLedger();
     currentLedger = ledgerInfo.sequence;
   } catch (err) {
-    const msg = `Failed to fetch latest ledger: ${err instanceof Error ? err.message : String(err)}`;
+    const msg = redactSecrets(`Failed to fetch latest ledger: ${err instanceof Error ? err.message : String(err)}`);
     logger.error(msg);
     return { success: false, status: "ERROR", amount: amount.toString(), error: msg };
   }
@@ -259,7 +263,7 @@ export async function topupAllowance(
   try {
     sourceAccount = await server.getAccount(userAddress);
   } catch (err) {
-    const msg = `Failed to fetch account for ${userAddress}: ${err instanceof Error ? err.message : String(err)}`;
+    const msg = redactSecrets(`Failed to fetch account for ${userAddress}: ${err instanceof Error ? err.message : String(err)}`);
     logger.error(msg);
     return { success: false, status: "ERROR", amount: amount.toString(), error: msg };
   }
@@ -285,7 +289,7 @@ export async function topupAllowance(
   try {
     preparedTx = await server.prepareTransaction(tx);
   } catch (err) {
-    const msg = `Simulation/prepare failed: ${err instanceof Error ? err.message : String(err)}`;
+    const msg = redactSecrets(`Simulation/prepare failed: ${err instanceof Error ? err.message : String(err)}`);
     logger.error(msg);
     return { success: false, status: "ERROR", amount: amount.toString(), error: msg };
   }
@@ -317,7 +321,7 @@ export async function topupAllowance(
   try {
     sendResult = await server.sendTransaction(preparedTx as any);
   } catch (err) {
-    const msg = `sendTransaction threw: ${err instanceof Error ? err.message : String(err)}`;
+    const msg = redactSecrets(`sendTransaction threw: ${err instanceof Error ? err.message : String(err)}`);
     logger.error(msg);
     return { success: false, status: "ERROR", amount: amount.toString(), error: msg };
   }
