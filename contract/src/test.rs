@@ -1692,6 +1692,113 @@ fn test_frozen_merchant_survives_past_default_archive_point() {
     );
 }
 
+/// `extend_merchant_state_ttl` keeps the whitelist, freeze, merchant-index and
+/// merchant-revenue key groups alive past the default archive point
+/// (Issue #1218). It does not change the TTL value itself.
+#[test]
+fn test_extend_merchant_state_ttl_extends_each_key_group() {
+    use soroban_sdk::testutils::storage::Persistent as _;
+
+    let (env, contract_id, _token_addr, _user, _merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    install_admin(&env, &contract_id);
+
+    // Allow `extend_ttl` to reach the full ~90-day merchant window.
+    env.ledger().with_mut(|l| {
+        l.max_entry_ttl = 10_000_000;
+    });
+
+    let wl_merchant = Address::generate(&env);
+    let frz_merchant = Address::generate(&env);
+    let rev_merchant = Address::generate(&env);
+
+    // Whitelist group (each add also lands the merchant in the index).
+    client.add_merchant(&wl_merchant);
+    client.add_merchant(&frz_merchant);
+
+    // Freeze group.
+    client.freeze_merchant(&frz_merchant, &None);
+
+    // Merchant revenue group (indexed via add_merchant, revenue written directly).
+    client.add_merchant(&rev_merchant);
+    let today = env.ledger().timestamp() / 86400;
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::MerchantRevenue(rev_merchant.clone()), &5_000_000_000i128);
+        env.storage()
+            .persistent()
+            .set(&DataKey::MerchantSubCount(rev_merchant.clone()), &1u32);
+        let mut days = Vec::new(&env);
+        days.push_back(today);
+        env.storage()
+            .persistent()
+            .set(&DataKey::MerchantRevenueDayIndex(rev_merchant.clone()), &days);
+        env.storage()
+            .persistent()
+            .set(
+                &DataKey::MerchantRevenueDay(rev_merchant.clone(), today),
+                &5_000_000_000i128,
+            );
+        let mut history = Vec::new(&env);
+        history.push_back(5_000_000_000i128);
+        env.storage()
+            .persistent()
+            .set(&DataKey::MerchantRevenueHistory(rev_merchant.clone()), &history);
+    });
+
+    client.extend_merchant_state_ttl();
+
+    // Every key group must be extended to the merchant-state TTL window.
+    env.as_contract(&contract_id, || {
+        let assert_window = |key: &DataKey, label: &str| {
+            let ttl = env.storage().persistent().get_ttl(key);
+            assert!(
+                ttl >= MERCHANT_STATE_TTL_LEDGERS / 2,
+                "{label} TTL must reach the merchant window ({window}); got {ttl}",
+                window = MERCHANT_STATE_TTL_LEDGERS,
+            );
+        };
+
+        assert_window(&DataKey::WhitelistIndexSize, "WhitelistIndexSize");
+        assert_window(&DataKey::WhitelistIndex(0), "WhitelistIndex(0)");
+        assert_window(
+            &DataKey::MerchantWhitelist(wl_merchant.clone()),
+            "MerchantWhitelist",
+        );
+        assert_window(
+            &DataKey::WhitelistIndexSlot(wl_merchant.clone()),
+            "WhitelistIndexSlot",
+        );
+        assert_window(&DataKey::MerchantIndexSize, "MerchantIndexSize");
+        assert_window(&DataKey::MerchantIndex(0), "MerchantIndex(0)");
+        assert_window(&DataKey::MerchantKnown(frz_merchant.clone()), "MerchantKnown");
+        assert_window(&DataKey::MerchantFrozen(frz_merchant.clone()), "MerchantFrozen");
+        assert_window(&DataKey::MerchantRevenue(rev_merchant.clone()), "MerchantRevenue");
+        assert_window(&DataKey::MerchantSubCount(rev_merchant.clone()), "MerchantSubCount");
+        assert_window(
+            &DataKey::MerchantRevenueDayIndex(rev_merchant.clone()),
+            "MerchantRevenueDayIndex",
+        );
+        assert_window(
+            &DataKey::MerchantRevenueDay(rev_merchant.clone(), today),
+            "MerchantRevenueDay",
+        );
+        assert_window(
+            &DataKey::MerchantRevenueHistory(rev_merchant.clone()),
+            "MerchantRevenueHistory",
+        );
+    });
+
+    // Count event consistent with `subscriber_index_ttl_extended`.
+    let events = env.events().all();
+    let (_, topics, data) = events.get(events.len() - 1).unwrap();
+    let topic_symbol: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
+    let count: u64 = data.try_into_val(&env).unwrap();
+    assert_eq!(topic_symbol, Symbol::new(&env, "merchant_state_ttl_extended"));
+    assert!(count > 0, "merchant_state_ttl_extended must report a positive count");
+}
+
 /// Re-freeze (freeze → unfreeze → freeze) extends the TTL on the second freeze
 /// so the re-ban is also archive-proof.
 #[test]
@@ -10906,6 +11013,39 @@ fn test_whitelist_index_size_page_and_swap_remove() {
     assert_eq!(client.get_whitelist_size(), 2);
 }
 
+/// Regression: get_whitelist_page must not trap on extreme u32 offset/limit
+/// pairs and must clamp the page size like the other *_page readers
+/// (Issue #1220).
+#[test]
+fn test_get_whitelist_page_overflow_safe() {
+    let (env, contract_id, _token_addr, _user, _merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+    install_admin(&env, &contract_id);
+
+    let m1 = Address::generate(&env);
+    let m2 = Address::generate(&env);
+    client.add_merchant(&m1);
+    client.add_merchant(&m2);
+
+    // limit == 0 returns an empty page.
+    assert!(client.get_whitelist_page(&0, &0).is_empty());
+
+    // offset past the size returns an empty page.
+    assert!(client.get_whitelist_page(&100, &10).is_empty());
+
+    // u32::MAX offset must not trap; the whitelist is smaller than the offset.
+    assert!(client.get_whitelist_page(&u32::MAX, &10).is_empty());
+
+    // u32::MAX limit is clamped to WHITELIST_PAGE_SIZE; only 2 merchants exist.
+    let page = client.get_whitelist_page(&0, &u32::MAX);
+    assert!(page.len() <= 2);
+    assert!(page.iter().any(|m| m == m1));
+    assert!(page.iter().any(|m| m == m2));
+
+    // Both extreme at once must not trap.
+    assert!(client.get_whitelist_page(&u32::MAX, &u32::MAX).is_empty());
+}
+
 #[test]
 #[should_panic(expected = "HostError: Error(Contract, #2)")]
 fn test_subscription_amount_validation_zero() {
@@ -15150,7 +15290,38 @@ fn test_batch_charge_survives_extreme_grace_period() {
     client.commit_grace_period();
 
     // Subscribe with a normal interval so the charge is due at timestamp 1.
+    let interval: u64 = 3600;
     let interval: u64 = 1;
+    client.subscribe(
+        &user,
+        &merchant,
+        &1_0000000,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
+
+    // Advance past the interval so the charge is due.
+    env.ledger().with_mut(|l| {
+        l.timestamp += interval + 1;
+    });
+
+    // batch_charge must return a per-user result vector and not trap, even
+    // with a near-u64::MAX grace period configured.
+    // batch_charge must return a per-user result vector, not trap.
+    let mut users = soroban_sdk::Vec::new(&env);
+    users.push_back(user.clone());
+    let results = client.batch_charge(&users);
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results.get(0).unwrap(), crate::ChargeResult::Charged);
+}
+    // Exactly one result, and it must be a successful charge (not an error).
+    assert_eq!(results.len(), 1);
+    assert_eq!(results.get(0).unwrap(), crate::ChargeResult::Charged);
+}
+
 // ─────────────────────────────────────────────────────────────
 // Issue #1223: legacy `paused && !active` rows remain excluded
 // from get_active_subscriber_page (design invariant regression test)
@@ -15177,32 +15348,44 @@ fn test_batch_charge_survives_extreme_grace_period() {
 fn test_legacy_paused_subscription_remains_listed() {
     let (env, contract_id, token_addr, user, merchant) = setup();
     let client = FlowPayClient::new(&env, &contract_id);
+    let interval: u64 = 86400;
 
     // Subscribe so the user is in the subscriber index.
+    let interval: u64 = 3600;
     client.subscribe(
         &user,
         &merchant,
         &1_0000000,
         &interval,
-        &86400,
         &token_addr,
         &None,
         &None,
     );
 
-    // Advance past the interval so the charge is due.
-    env.ledger().with_mut(|l| {
-        l.timestamp += interval + 1;
+    // Simulate a legacy `paused && !active` row by writing the subscription
+    // directly into storage with active=false, paused=true.
+    env.as_contract(&contract_id, || {
+        let key = DataKey::Subscription(user.clone());
+        let mut sub: Subscription = env.storage().persistent().get(&key).unwrap();
+        sub.active = false;
+        sub.paused = true;
+        env.storage().persistent().set(&key, &sub);
     });
 
-    // batch_charge must return a per-user result vector, not trap.
-    let mut users = soroban_sdk::Vec::new(&env);
-    users.push_back(user.clone());
-    let results = client.batch_charge(&users);
+    // The active-subscriber page must NOT include this legacy row
+    // (sub.active == false).
+    let active_page = client.get_active_subscriber_page(&0u64, &10u32);
+    assert!(
+        !active_page.contains(&user),
+        "legacy paused && !active row must not appear in get_active_subscriber_page"
+    );
 
-    // Exactly one result, and it must be a successful charge (not an error).
-    assert_eq!(results.len(), 1);
-    assert_eq!(results.get(0).unwrap(), crate::ChargeResult::Charged);
+    // The raw append-only page still returns the slot (tombstone not set).
+    let raw_page = client.get_subscriber_page(&0u64, &10u32);
+    assert!(
+        raw_page.contains(&user),
+        "legacy paused && !active row must still appear in get_subscriber_page (raw index)"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -15319,6 +15502,15 @@ fn test_subscription_health_within_grace_with_grace_period() {
 
     let grace: u64 = 7200;
     let interval: u64 = 3600;
+    client.subscribe(
+        &user,
+        &merchant,
+        &1_0000000,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
     client.propose_grace_period(&grace);
     client.commit_grace_period();
     // Sanity: user is in the active page before we mutate the row.
@@ -15370,26 +15562,32 @@ fn test_subscription_health_within_grace_with_grace_period() {
 fn test_cancelled_subscription_not_listed() {
     let (env, contract_id, token_addr, user, merchant) = setup();
     let client = FlowPayClient::new(&env, &contract_id);
+    install_admin(&env, &contract_id);
+
+    let grace: u64 = 3600;
+    let interval: u64 = 3600;
+    client.propose_grace_period(&grace);
+    client.commit_grace_period();
 
     client.subscribe(
         &user,
         &merchant,
         &1_0000000,
         &interval,
-        &86400,
+        &86400u64,
         &token_addr,
         &None,
         &None,
     );
 
-    // Advance past interval but still inside grace window.
-    env.ledger().with_mut(|l| {
-        l.timestamp += interval + grace / 2;
-    });
+    // Cancel through the normal path — active=false, paused=false.
+    client.cancel(&user);
 
-    let health = client.get_subscription_health(&user);
-    assert!(health.charge_due, "charge must be due inside grace window");
-    assert!(health.within_grace, "within_grace must be true inside grace window");
+    let page = client.get_active_subscriber_page(&0u64, &10u32);
+    assert!(
+        !page.contains(&user),
+        "cancelled subscription must not appear in get_active_subscriber_page"
+    );
 }
 
 /// When grace_period > 0 and we are past the grace window, both charge_due
@@ -15432,8 +15630,19 @@ fn test_subscription_health_past_grace_window() {
 /// structured MetadataClearedEventData payload (not a bare address).
 #[test]
 fn test_clear_metadata_emits_exactly_one_publisher() {
-    let (env, contract_id, _token_addr, user, _merchant) = setup();
+    let (env, contract_id, token_addr, user, merchant) = setup();
     let client = FlowPayClient::new(&env, &contract_id);
+
+    let interval: u64 = 3600;
+    client.subscribe(
+        &user,
+        &merchant,
+        &1_0000000,
+        &interval,
+        &token_addr,
+        &None,
+        &None,
+    );
 
     let label = soroban_sdk::String::from_str(&env, "gold");
     // set_metadata / clear_metadata are the public contract functions.
@@ -15466,4 +15675,77 @@ fn test_clear_metadata_emits_exactly_one_publisher() {
         !page.contains(&user),
         "cancelled subscription must not appear in get_active_subscriber_page"
     );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Issue #1222: scan_subscriber_slots helper — targeted tests
+// ─────────────────────────────────────────────────────────────
+
+/// Sparse index: some slots are tombstoned (cancelled users whose index entries
+/// were cleared). `get_subscriber_page` must skip tombstoned slots and return
+/// only the live addresses, maintaining the correct count.
+///
+/// Note: cancellation automatically tombstones the subscriber index slot via
+/// `remove_subscriber_index` in `cancel_inner`, so the page is already sparse
+/// immediately after cancel — no need to call `clear_subscriber_index_entry`.
+#[test]
+fn test_scan_sparse_index_skips_tombstones() {
+    let (env, contract_id, token_addr, user_a, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+
+    let user_b = setup_funded_user(&env, &contract_id, &token_addr);
+    let user_c = setup_funded_user(&env, &contract_id, &token_addr);
+
+    // Subscribe all three users — they occupy slots 0, 1, 2.
+    client.subscribe(&user_a, &merchant, &1_0000000, &86400, &token_addr, &None, &None);
+    client.subscribe(&user_b, &merchant, &1_0000000, &86400, &token_addr, &None, &None);
+    client.subscribe(&user_c, &merchant, &1_0000000, &86400, &token_addr, &None, &None);
+    assert_eq!(client.get_subscriber_count(), 3);
+
+    // Cancel user_b — this tombstones slot 1 automatically via remove_subscriber_index.
+    client.cancel(&user_b);
+
+    // The raw page scans slots 0..3; slot 1 is tombstoned and must be skipped.
+    let page = client.get_subscriber_page(&0u64, &10u32);
+    assert_eq!(page.len(), 2, "tombstoned slot must be skipped");
+    assert!(page.contains(&user_a));
+    assert!(!page.contains(&user_b));
+    assert!(page.contains(&user_c));
+}
+
+/// All-tombstoned page: when every slot in the requested window has been
+/// tombstoned (via cancel), `get_subscriber_page` must return an empty Vec.
+#[test]
+fn test_scan_all_tombstoned_page_returns_empty() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+
+    // Subscribe and immediately cancel — cancel tombstones the slot automatically.
+    client.subscribe(&user, &merchant, &1_0000000, &86400, &token_addr, &None, &None);
+    client.cancel(&user);
+
+    // The only slot is tombstoned — page must be empty.
+    let page = client.get_subscriber_page(&0u64, &10u32);
+    assert_eq!(page.len(), 0, "all-tombstoned page must return empty Vec");
+}
+
+/// Offset past the end: when `offset >= subscriber_count`, the scan window is
+/// outside the index range and all three reader functions must return empty.
+#[test]
+fn test_scan_offset_past_end_returns_empty() {
+    let (env, contract_id, token_addr, user, merchant) = setup();
+    let client = FlowPayClient::new(&env, &contract_id);
+
+    client.subscribe(&user, &merchant, &1_0000000, &86400, &token_addr, &None, &None);
+    assert_eq!(client.get_subscriber_count(), 1);
+
+    // offset 1 == size — out of bounds.
+    let page = client.get_subscriber_page(&1u64, &10u32);
+    assert_eq!(page.len(), 0, "get_subscriber_page: offset at size must return empty");
+
+    let active_page = client.get_active_subscriber_page(&1u64, &10u32);
+    assert_eq!(active_page.len(), 0, "get_active_subscriber_page: offset at size must return empty");
+
+    let batch = client.get_next_charge_batch(&1u64, &10u32, &None);
+    assert_eq!(batch.len(), 0, "get_next_charge_batch: offset at size must return empty");
 }
