@@ -86,6 +86,10 @@ import {
   tallyChargeResults,
   type CandidateRecord,
 } from "./lib/dry-run-stats.js";
+import {
+  CHARGE_RESULT_NAMES as CHARGE_RESULT_NAMES_EXPORT,
+  decodeChargeResults,
+} from "./lib/charge-results.js";
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
@@ -243,23 +247,24 @@ function stroopsToXlm(stroops: bigint | string): string {
 }
 
 /**
- * Decode a Vec<ChargeResult> or Vec<ChargeSimResult> from an ScVal return value.
- * Each enum variant is encoded as a ScVal symbol.
+ * `ChargeResult` variant names, in the declaration order of
+ * `contract/src/batch.rs`.
+ *
+ * The table itself lives in `lib/charge-results.ts` so the keeper, the DLQ
+ * replayer and the tests all decode the same way.
  */
-function decodeEnumVec(retval: xdr.ScVal): string[] {
-  const vec =
-    typeof (retval as any).vec === "function"
-      ? ((retval as any).vec() as xdr.ScVal[])
-      : ((retval as any)._value?.vec as xdr.ScVal[] | undefined);
+export const CHARGE_RESULT_NAMES = CHARGE_RESULT_NAMES_EXPORT;
 
-  if (!Array.isArray(vec)) return [];
-
-  return vec.map((item: any) => {
-    if (item.switch?.()?.name === "scvSymbol") {
-      return item.sym().toString();
-    }
-    return String(item);
-  });
+/**
+ * Decode a `Vec<ChargeResult>` (or `Vec<ChargeSimResult>`) from an ScVal
+ * return value.
+ *
+ * Each enum variant is encoded as an `scvU32` discriminant, so the discriminant
+ * is mapped back to its variant name here. See `lib/charge-results.ts` and
+ * `docs/charge-results.md`.
+ */
+export function decodeEnumVec(retval: xdr.ScVal): string[] {
+  return decodeChargeResults(retval);
 }
 
 // ── File I/O Helpers ─────────────────────────────────────────────────────────
@@ -428,20 +433,38 @@ async function getMaxBatchSize(): Promise<number> {
  * un-narrowed, still bounded by BATCH_SIZE_CEILING.
  */
 async function resolveBatchSize(): Promise<number> {
-  let effective =
-    ENV_BATCH_SIZE && ENV_BATCH_SIZE > 0 ? ENV_BATCH_SIZE : DEFAULT_BATCH_SIZE;
+  let onChainMax: number | undefined;
 
   try {
-    const onChainMax = await getMaxBatchSize();
-    if (onChainMax > 0) {
-      effective = Math.min(effective, onChainMax);
-    }
+    onChainMax = await getMaxBatchSize();
   } catch (err) {
     log(
       DRY_RUN,
       `WARNING: could not read on-chain get_max_batch_size (${err instanceof Error ? err.message : err}); ` +
-        `using ${effective} as the clamp`
+        `using ${ENV_BATCH_SIZE ?? DEFAULT_BATCH_SIZE} as the clamp`,
     );
+  }
+
+  return resolveEffectiveBatchSize(ENV_BATCH_SIZE, onChainMax);
+}
+
+/**
+ * The pure part of the batch-size resolution: narrow the operator-supplied
+ * value to the live on-chain maximum, and clamp the result to the range the
+ * contract accepts (1..200).
+ *
+ * An unknown on-chain maximum (`undefined`, 0, or a failed read) leaves the
+ * operator value un-narrowed, still bounded by the ceiling.
+ */
+export function resolveEffectiveBatchSize(
+  envBatchSize: number | undefined,
+  onChainMax: number | undefined,
+): number {
+  let effective =
+    envBatchSize && envBatchSize > 0 ? envBatchSize : DEFAULT_BATCH_SIZE;
+
+  if (onChainMax && onChainMax > 0) {
+    effective = Math.min(effective, onChainMax);
   }
 
   return Math.min(BATCH_SIZE_CEILING, Math.max(1, effective));
@@ -1238,7 +1261,14 @@ async function main(): Promise<void> {
   if (once) {
     const report = await runCycle();
     incrementCycles();
-    process.exit(report.errors.length > 0 && report.totalCharged === 0 ? 1 : 0);
+    // Exit 1 only when the cycle could not run at all (no subscribers were
+    // even checked AND errors occurred).  A cycle that ran but charged nothing
+    // because nothing was due is a normal, successful outcome (exit 0).
+    // Per-subscriber failures are recorded in the DLQ and surfaced via
+    // metrics — they do not change the exit code.
+    const cycleFailure = report.errors.length > 0 && report.totalChecked === 0;
+    await stopMetricsServer();
+    process.exit(cycleFailure ? 1 : 0);
   }
 
   let shutdown = false;

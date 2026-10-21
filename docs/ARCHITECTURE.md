@@ -38,14 +38,18 @@ graph TD
 | `admin.rs`                 | `require_admin`, admin initialization, and two-step admin transfer (`transfer_admin` / `accept_admin`).                                                                                                                    |
 | `batch.rs`                 | `batch_charge`, `batch_cancel`, `batch_extend_subscription_ttl`. Defines `ChargeResult` and `CancelResult` enums. Default `MAX_BATCH_SIZE = 50`.                                                                           |
 | `bench.rs`                 | Instruction-count benchmarks gated by `#[cfg(feature = "bench")]`. Not compiled by `cargo test` unless `--features bench` is passed.                                                                                       |
+| `caps.rs`                  | Single source of truth for the batch and page caps: 9 constants (`DEFAULT_BATCH_SIZE`, `MAX_BATCH_SIZE_CEILING`, `MAX_BATCH_PAUSE_SUBSCRIPTIONS`, `MAX_WHITELIST_BATCH_SIZE`, `MAX_MERCHANT_SUB_COUNT_BATCH`, `SUBSCRIBER_PAGE_SIZE`, `MERCHANT_PAGE_SIZE`, `REVENUE_DAY_PAGE_SIZE`, `TOP_MERCHANTS_PAGE_SIZE`) plus the `effective_*` clamping helpers. The operator-facing table lives in [limits.md](./limits.md). |
 | `charge_exec.rs`           | Charge prechecks (`precheck_charge`), auto-resume logic (`try_auto_resume`), simulation (`simulate_charge`), and fee-aware transfer execution (`execute_charge`). Defines `ChargeSimResult` enum.                          |
-| `errors.rs`                | `ContractError` enum with 34 variants.                                                                                                                                                                                     |
-| `events.rs`                | All `publish_*` event helpers (~30+ event types) and event data structs.                                                                                                                                                   |
+| `errors.rs`                | `ContractError` enum with 46 variants.                                                                                                                                                                                     |
+| `events.rs`                | All `publish_*` event helpers (53 event types) and event data structs.                                                                                                                                                     |
 | `fee.rs`                   | Protocol fee calculation (`calculate_fee_amount`), two-step propose/commit, fee-aware transfers (`transfer_subscription_charge`, `transfer_pay_per_use`), cumulative fee tracking, and per-merchant fee recipient routing. |
-| `limits.rs`                | Documentation pointer for limit handling (limits live in `validation.rs`, `batch.rs`, `spending_limit.rs`, and `min_interval.rs`). |
+| `grace.rs`                 | Grace-window helpers: `get_grace_period` (with instance TTL refresh) and `is_grace_lapsed`, the single recovery rule shared by the charge and cancel paths. See [SUBSCRIBER-LIFECYCLE.md](./SUBSCRIBER-LIFECYCLE.md). |
+| `limits.rs`                | Documentation pointer for limit handling (limits live in `validation.rs`, `batch.rs`, `caps.rs`, `spending_limit.rs`, and `min_interval.rs`). |
+| `merchant_stats.rs`        | Merchant revenue accounting and ranking: cumulative revenue, daily revenue buckets and history, merchant index and top-by-subscribers ranking, per-merchant subscriber counts, and administrative reset/prune helpers. Owns 9 of the 49 `DataKey` variants. |
 | `migration.rs`             | Schema version tracking (current: v3), v1→v2 migration (add `paused` field), v2→v3 migration (populate `referrer`).                                                                                                        |
 | `min_interval.rs`          | Minimum billing interval floor (default 3600s).                                                                                                                                                                            |
 | `referral.rs`              | Referrer storage, lookup, removal, and self-referral check. See [REFERRALS.md](./REFERRALS.md).                                                                                                                            |
+| `scenario.rs`              | End-to-end multi-actor regression scenarios (test-only, `#[cfg(test)]`): double-cancel idempotency, effective volume cap, subscription transfer rebinding, estimate/live parity, zero-interval guards, and the schema-version guard. Each scenario is named after the fix it guards. |
 | `spending_limit.rs`        | Per-user daily spending limits using temporary storage (~1 day TTL), day window anchoring via `DayStart` key.                                                                                                              |
 | `storage.rs`               | Low-level storage helpers: subscription get/set, TTL extension, admin get/set, token get, contract pause get/set, pause expiry get/set/clear.                                                                              |
 | `subscription_count.rs`    | Active subscription counter (instance), append-only subscriber index with tombstoning, per-merchant subscriber count.                                                                                                      |
@@ -122,6 +126,8 @@ FlowPay uses Soroban instance, persistent, and temporary storage deliberately. T
 | `ActiveCount`                            | Active subscription count                                  | instance     |
 | `MaxBatchSize`                           | Configurable batch size limit (max 200, default 50)        | instance     |
 | `MaxWhitelistBatchSize`                  | Configurable whitelist batch size limit (default 50)       | instance     |
+| `MaxBatchSize`                           | Configurable batch size limit (max 200, default 50) — one of two batch knobs; the other is `MaxWhitelistBatchSize` (see `caps.rs` and [limits.md](./limits.md)) | instance     |
+| `MaxWhitelistBatchSize`                  | Configurable whitelist batch size limit (max 200, default 50) — the second batch knob, independent of `MaxBatchSize`                                                            | instance     |
 | `GlobalVolumeWindow`                     | Rolling volume cap state                                   | instance     |
 | `GlobalVolumeCapOverride`                | Admin-configurable volume cap override                     | instance     |
 | `TotalProtocolFees`                      | Cumulative protocol fees across all charges                | instance     |
@@ -162,36 +168,6 @@ Each `Subscription(user)` record carries its own `token` address rather than sha
 
 Events are emitted from `events.rs` and kept separate from storage mutation so the public contract methods remain small.
 
-| Event                                              | Trigger                                                       |
-| -------------------------------------------------- | ------------------------------------------------------------- |
-| `subscribed`                                       | New or replaced subscription created                          |
-| `referred`                                         | Referrer stored on subscribe ([REFERRALS.md](./REFERRALS.md)) |
-| `charged`                                          | Successful recurring charge                                   |
-| `pay_per_use`                                      | Successful one-time charge                                    |
-| `cancelled`                                        | Subscription cancelled                                        |
-| `cancelled_with_refund`                            | Subscription cancelled with prorated refund                   |
-| `trial_extended`                                   | Trial period extended                                         |
-| `paused` / `resumed`                               | Subscription pause state changed (user-initiated)             |
-| `subscription_paused`                              | Subscription paused via batch admin operation                 |
-| `subscription_auto_resumed`                        | Pause expiry passed; subscription auto-resumed on charge      |
-| `admin_transferred`                                | Two-step admin transfer completed                             |
-| `fee_proposed` / `fee_committed` / `fee_cleared`   | Fee configuration changed                                     |
-| `merchant_fee_recipient_set`                       | Per-merchant custom fee recipient configured                  |
-| `merchant_added` / `merchant_removed`              | Whitelist updated                                             |
-| `merchant_frozen` / `merchant_unfrozen`            | Merchant freeze state changed                                 |
-| `grace_period_proposed` / `grace_period_committed` | Grace period updated                                          |
-| `sub_amount_updated` / `sub_interval_updated`      | Admin adjusted a subscription                                 |
-| `daily_limit_set` / `daily_limit_removed`          | Daily limit updated                                           |
-| `daily_window_started`                             | Daily spending window reset for a user                        |
-| `subscription_transferred`                         | Subscription ownership moved                                  |
-| `sub_transferred`                                  | Legacy subscription transfer event                            |
-| `min_interval_set`                                 | Minimum subscription interval updated                         |
-| `merch_hist_cleared`                               | Merchant revenue history cleared                              |
-| `contract_paused` / `contract_unpaused`            | Global contract pause toggled                                 |
-| `upgrade`                                          | Contract WASM upgraded                                        |
-| `upg_proposed`                                     | WASM upgrade proposed (two-step)                              |
-| `migration_completed`                              | Storage schema migration finished                             |
-| `subscriber_index_ttl_extended`                    | Subscriber index TTL refreshed                                |
 | Event                                                           | Trigger                                                       |
 | --------------------------------------------------------------- | ------------------------------------------------------------- |
 | `subscribed`                                                    | New or replaced subscription created                          |
