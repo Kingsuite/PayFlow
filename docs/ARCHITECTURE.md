@@ -106,7 +106,7 @@ graph TD
 
 ## Storage Strategy
 
-FlowPay uses Soroban instance, persistent, and temporary storage deliberately.
+FlowPay uses Soroban instance, persistent, and temporary storage deliberately. The table below is a high-level summary of purpose and storage tier only. The **canonical, exhaustive** `DataKey` reference — including each key's value type, TTL policy, and the functions that read or write it — lives in [Storage and TTL Management](./architecture/storage_and_ttl.md). When the two disagree, that document wins.
 
 | DataKey                                  | Purpose                                                    | Storage type |
 | ---------------------------------------- | ---------------------------------------------------------- | ------------ |
@@ -124,14 +124,18 @@ FlowPay uses Soroban instance, persistent, and temporary storage deliberately.
 | `MinInterval`                            | Minimum allowed subscription interval                      | instance     |
 | `SchemaVersion`                          | Storage schema version                                     | instance     |
 | `ActiveCount`                            | Active subscription count                                  | instance     |
+| `MaxBatchSize`                           | Configurable batch size limit (max 200, default 50)        | instance     |
+| `MaxWhitelistBatchSize`                  | Configurable whitelist batch size limit (default 50)       | instance     |
 | `MaxBatchSize`                           | Configurable batch size limit (max 200, default 50) — one of two batch knobs; the other is `MaxWhitelistBatchSize` (see `caps.rs` and [limits.md](./limits.md)) | instance     |
 | `MaxWhitelistBatchSize`                  | Configurable whitelist batch size limit (max 200, default 50) — the second batch knob, independent of `MaxBatchSize`                                                            | instance     |
 | `GlobalVolumeWindow`                     | Rolling volume cap state                                   | instance     |
 | `GlobalVolumeCapOverride`                | Admin-configurable volume cap override                     | instance     |
 | `TotalProtocolFees`                      | Cumulative protocol fees across all charges                | instance     |
-| `SubscriberIndexSize`                    | Append-only subscriber count                               | instance     |
+| `PendingMerchantRevCount`                | Merchants with pending (unwithdrawn) revenue > 0           | instance     |
+| `SubscriberIndexSize`                    | Append-only subscriber count                               | persistent   |
 | `Subscription(user)`                     | Subscriber subscription record                             | persistent   |
 | `MerchantWhitelist(merchant)`            | Whitelisted merchant flag                                  | persistent   |
+| `WhitelistIndex(i)` / `WhitelistIndexSize` / `WhitelistIndexSlot(merchant)` | Indexed whitelist pagination and O(1) reverse slot lookup | persistent |
 | `MerchantFrozen(merchant)`               | Frozen merchant flag                                       | persistent   |
 | `MerchantFreezeReason(merchant)`         | Freeze reason string                                       | persistent   |
 | `MerchantRevenue(merchant)`              | Cumulative merchant revenue                                | persistent   |
@@ -275,4 +279,4 @@ This means the contract **does not** currently tolerate per‑user allowance fai
 See [`docs/KEEPER.md`](./KEEPER.md) for operational precheck steps.
 
 
-For a complete breakdown of every `DataKey` variant, storage tier, TTL policy, and which functions read/write each key, see [Storage and TTL Management](architecture/storage_and_ttl.md).
+For the canonical, complete breakdown of every `DataKey` variant — storage tier, TTL policy, and which functions read/write each key — see [Storage and TTL Management](architecture/storage_and_ttl.md). The Storage Strategy table above is a summary; that document is the exhaustive reference.
