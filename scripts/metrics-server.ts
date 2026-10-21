@@ -36,6 +36,9 @@ import {
   Registry,
 } from "prom-client";
 import type { Server } from "node:http";
+import { logger as rootLogger } from "./logger.js";
+
+const logger = rootLogger.child({ script: "metrics-server" });
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
@@ -263,27 +266,28 @@ export function startMetricsServer(): boolean {
 
     server.on("error", (err: NodeJS.ErrnoException) => {
       if (err.code === "EADDRINUSE") {
-        console.error(
-          `[metrics] Port ${METRICS_PORT} already in use — keeper will continue without metrics`,
-        );
+        logger.error("Port already in use — keeper will continue without metrics", {
+          port: METRICS_PORT,
+        });
         server?.close();
         server = null;
       } else {
-        console.error(`[metrics] Server error: ${err.message}`);
+        logger.error("Metrics server error", { error: err.message });
       }
     });
 
     server.listen(METRICS_PORT, () => {
-      console.error(
-        `[metrics] Prometheus metrics server listening on :${METRICS_PORT}/metrics`,
-      );
+      logger.info("Prometheus metrics server listening", {
+        port: METRICS_PORT,
+        path: "/metrics",
+      });
     });
 
     return true;
   } catch (err) {
-    console.error(
-      `[metrics] Failed to start metrics server: ${err instanceof Error ? err.message : err}`,
-    );
+    logger.error("Failed to start metrics server", {
+      error: err instanceof Error ? err.message : String(err),
+    });
     return false;
   }
 }
@@ -298,7 +302,7 @@ export function stopMetricsServer(): Promise<void> {
       return;
     }
     server.close(() => {
-      console.error("[metrics] Server stopped");
+      logger.info("Metrics server stopped");
       server = null;
       resolve();
     });
@@ -313,20 +317,19 @@ export function stopMetricsServer(): Promise<void> {
  * keeper process imports and uses the exported record* functions.
  */
 async function main(): Promise<void> {
-  console.error(
-    `[metrics] Starting standalone metrics server on port ${METRICS_PORT}`,
-  );
+  logger.info("Starting standalone metrics server", { port: METRICS_PORT });
   startMetricsServer();
 
   // Keep the process alive. In standalone mode the metrics just reflect
   // defaults (zero counters / empty histograms) unless a keeper updates them.
   process.on("SIGINT", async () => {
-    console.error("\n[metrics] Shutting down...");
+    logger.info("Shutting down (SIGINT)");
     await stopMetricsServer();
     process.exit(0);
   });
 
   process.on("SIGTERM", async () => {
+    logger.info("Shutting down (SIGTERM)");
     await stopMetricsServer();
     process.exit(0);
   });
@@ -336,9 +339,7 @@ async function main(): Promise<void> {
 const isMain = process.argv[1] === fileURLToPath(import.meta.url);
 if (isMain) {
   main().catch((err) => {
-    console.error(
-      `[metrics] Fatal: ${err instanceof Error ? err.message : err}`,
-    );
+    logger.error("Fatal error", { error: err instanceof Error ? err.message : String(err) });
     process.exit(1);
   });
 }

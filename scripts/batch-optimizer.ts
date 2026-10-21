@@ -34,6 +34,7 @@ import {
   scValToNative,
 } from "@stellar/stellar-sdk";
 import { Server } from "@stellar/stellar-sdk/rpc";
+import { fileURLToPath } from "node:url";
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
@@ -409,9 +410,9 @@ async function main(): Promise<void> {
   }
 }
 
-const isDirectRun =
-  process.argv[1]?.endsWith("batch-optimizer.ts") ||
-  process.argv[1]?.endsWith("batch-optimizer.js");
+// ESM entrypoint guard: only auto-run when executed directly, not when
+// imported (e.g. by keeper.ts / replay-dlq.ts, which reuse buildOptimizedBatches).
+const isDirectRun = process.argv[1] === fileURLToPath(import.meta.url);
 
 if (isDirectRun) {
   main().catch((err) => {

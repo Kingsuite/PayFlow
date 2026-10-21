@@ -45,6 +45,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -392,6 +393,11 @@ function main() {
   }
 }
 
-if (require.main === module) {
+// ESM entrypoint guard (scripts/package.json sets "type": "module", so the CJS
+// `require.main === module` check would throw `require is not defined`).
+// Run only when executed directly (`tsx scripts/backup-indexer-db.ts`), not
+// when imported by tests.
+const isMain = process.argv[1] === fileURLToPath(import.meta.url);
+if (isMain) {
   main();
 }
