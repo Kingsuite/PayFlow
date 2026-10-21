@@ -43,6 +43,7 @@ capped entrypoint below reads one of them, so this is the complete set.
 | `MAX_BATCH_PAUSE_SUBSCRIPTIONS`   | 25    | `batch_cancel`, `batch_pause_subscriptions`   | No                     |
 | `MAX_WHITELIST_BATCH_SIZE`        | 50    | `whitelist_batch_add` / `_remove`, `get_merchant_statuses` | Yes, via `set_max_whitelist_batch_size` |
 | `MAX_MERCHANT_SUB_COUNT_BATCH`    | 50    | `get_merchant_sub_counts`                    | No                     |
+| `MAX_PRUNE_REVENUE_DAYS`          | 90    | `prune_merchant_revenue_days`                | No                     |
 | `SUBSCRIBER_PAGE_SIZE`            | 50    | `get_subscriber_page`, `get_active_subscriber_page`, `get_next_charge_batch` | No |
 | `MERCHANT_PAGE_SIZE`              | 50    | `get_merchant_page`                           | No                     |
 | `REVENUE_DAY_PAGE_SIZE`           | 30    | `get_merchant_revenue_day_page`              | No                     |
@@ -94,6 +95,7 @@ changes all the rows that share it.
 | `whitelist_batch_remove`       | Yes    | `get_max_whitelist_batch_size()` (default 50, max 200) | `DataKey::MaxWhitelistBatchSize` |
 | `get_merchant_statuses`        | No     | `get_max_whitelist_batch_size()` (default 50, max 200) | `DataKey::MaxWhitelistBatchSize` |
 | `get_merchant_sub_counts`      | No     | 50, fixed                                        | `MAX_MERCHANT_SUB_COUNT_BATCH`       |
+| `prune_merchant_revenue_days`  | Yes    | 90, fixed                                        | `MAX_PRUNE_REVENUE_DAYS`             |
 
 Two rows surprise people:
 

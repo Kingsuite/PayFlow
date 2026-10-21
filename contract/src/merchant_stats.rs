@@ -1,13 +1,18 @@
 use soroban_sdk::{Address, Env, Vec};
 
 use crate::caps::{
-    MAX_MERCHANT_SUB_COUNT_BATCH, REVENUE_DAY_PAGE_SIZE, TOP_MERCHANTS_PAGE_SIZE,
+    MAX_MERCHANT_SUB_COUNT_BATCH, MAX_PRUNE_REVENUE_DAYS, REVENUE_DAY_PAGE_SIZE,
+    TOP_MERCHANTS_PAGE_SIZE,
 };
 use crate::DataKey;
 
 /// Maximum number of day-index entries retained per merchant after a prune or reset.
 /// Entries beyond this cap are dropped from the oldest end so the index stays bounded.
 pub const MAX_RETAINED_REVENUE_DAYS: u32 = 90;
+
+/// Maximum number of per-charge entries retained in `MerchantRevenueHistory`.
+/// Appends beyond this cap drop the oldest entries first.
+pub const MAX_REVENUE_HISTORY: u32 = 100;
 
 /// Returns the total revenue accumulated for a merchant.
 pub fn get_merchant_revenue(env: &Env, merchant: &Address) -> i128 {
@@ -56,24 +61,23 @@ pub fn increment_revenue(env: &Env, merchant: &Address, amount: i128) {
 
 /// Returns the merchant's revenue history as a Vec (oldest -> newest), limited to the
 /// most recent `days` entries. Returns an empty Vec when unset or after clearing.
+///
+/// The stored entry is a single Vec of at most `MAX_REVENUE_HISTORY` entries, which
+/// the host loads as a whole; the requested window is then taken with a host-side
+/// `slice`, so no entry outside the window is decoded into the contract.
 pub fn get_merchant_revenue_history(env: &Env, merchant: &Address, days: u32) -> Vec<i128> {
+    if days == 0 {
+        return Vec::new(env);
+    }
+
     let history: Vec<i128> = env
         .storage()
         .persistent()
         .get(&DataKey::MerchantRevenueHistory(merchant.clone()))
         .unwrap_or_else(|| Vec::new(env));
 
-    if days == 0 || history.is_empty() {
-        return Vec::new(env);
-    }
-
     let len = history.len();
-    let start = len.saturating_sub(days);
-    let mut out = Vec::new(env);
-    for i in start..len {
-        out.push_back(history.get(i).unwrap());
-    }
-    out
+    history.slice(len.saturating_sub(days)..len)
 }
 
 /// Removes the merchant's consolidated revenue history from persistent storage.
@@ -120,13 +124,18 @@ pub fn increment_revenue_with_daily(env: &Env, merchant: &Address, amount: i128)
             .extend_ttl(&index_key, 1555200, 1555200);
     }
 
-    // append to consolidated history Vec
+    // append to consolidated history Vec, keeping only the newest
+    // MAX_REVENUE_HISTORY entries (oldest dropped first)
     let hist_key = DataKey::MerchantRevenueHistory(merchant.clone());
     let mut history: Vec<i128> = env
         .storage()
         .persistent()
         .get(&hist_key)
         .unwrap_or_else(|| Vec::new(env));
+    let len = history.len();
+    if len >= MAX_REVENUE_HISTORY {
+        history = history.slice(len - (MAX_REVENUE_HISTORY - 1)..len);
+    }
     history.push_back(amount);
     env.storage().persistent().set(&hist_key, &history);
     env.storage()
@@ -401,17 +410,27 @@ pub fn bump_merchant_revenue_day(env: &Env, merchant: &Address, day: u64) {
 /// Removes each requested day's storage entry and compacts the day-index so
 /// stale slots are never returned by readers. Retains at most
 /// `MAX_RETAINED_REVENUE_DAYS` entries (newest) after compaction.
+///
+/// Panics with `BatchTooLarge` when `days` holds more than
+/// `MAX_PRUNE_REVENUE_DAYS` entries.
 pub fn prune_merchant_revenue_days(env: &Env, merchant: &Address, days: Vec<u64>) {
     crate::admin::require_admin(env);
 
-    // Build a set of days being removed for O(n) index walk.
-    // Soroban has no HashSet in no_std, so we collect into a Vec and scan.
-    let mut removed_set: Vec<u64> = Vec::new(env);
-    for day in days.into_iter() {
+    let n = days.len();
+    if n > MAX_PRUNE_REVENUE_DAYS {
+        env.panic_with_error(crate::errors::ContractError::BatchTooLarge);
+    }
+
+    // Copy the removed days into a bounded, sorted buffer so each index entry
+    // is tested with a binary search: O(|index| * log |days|).
+    let mut buf = [0u64; MAX_PRUNE_REVENUE_DAYS as usize];
+    for (i, day) in days.iter().enumerate() {
         let key = DataKey::MerchantRevenueDay(merchant.clone(), day);
         env.storage().persistent().remove(&key);
-        removed_set.push_back(day);
+        buf[i] = day;
     }
+    let removed_set = &mut buf[..n as usize];
+    removed_set.sort_unstable();
 
     // Compact the day-index: keep entries whose day is not in removed_set.
     let index_key = DataKey::MerchantRevenueDayIndex(merchant.clone());
@@ -423,14 +442,7 @@ pub fn prune_merchant_revenue_days(env: &Env, merchant: &Address, days: Vec<u64>
 
     let mut compacted: Vec<u64> = Vec::new(env);
     for day in index.iter() {
-        let mut pruned = false;
-        for r in removed_set.iter() {
-            if day == r {
-                pruned = true;
-                break;
-            }
-        }
-        if !pruned {
+        if removed_set.binary_search(&day).is_err() {
             compacted.push_back(day);
         }
     }
@@ -478,6 +490,10 @@ pub fn get_merchant_sub_counts(env: &Env, merchants: &Vec<Address>) -> Vec<(Addr
 
 /// Returns aggregate revenue statistics for a merchant: (total, count, min_charge, max_charge).
 /// Returns (0, 0, 0, 0) if no revenue history exists.
+///
+/// `total` is the all-time cumulative revenue. `count`, `min_charge` and `max_charge`
+/// cover only the retained history window (at most `MAX_REVENUE_HISTORY` most recent
+/// charges), which is the bound on what this reader decodes.
 pub fn get_merchant_revenue_summary(env: &Env, merchant: &Address) -> (i128, i128, i128, i128) {
     let total = get_merchant_revenue(env, merchant);
     let history: Vec<i128> = env
