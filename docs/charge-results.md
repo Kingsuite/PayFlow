@@ -107,6 +107,44 @@ breaks every off-chain decoder that has ever been written.
 need no action. Note that a non-`Charged` result for one address never aborts the
 rest of the batch, so you always get the full-length vector.
 
+### Batch charge execution
+
+The keeper submits a page once. The contract produces one result per address;
+eligibility skips and insufficient allowance are recorded and processing
+continues. The allowance check happens before `transfer_from`, preventing an
+insufficient allowance from aborting the transaction.
+
+```mermaid
+sequenceDiagram
+  actor Keeper
+  participant Contract as FlowPay contract
+  participant Token as SAC token
+  participant Events as Contract events
+  Keeper->>Contract: batch_charge(users)
+  loop each user
+    Contract->>Contract: Check subscription and charge eligibility
+    alt No charge outcome (not due, inactive, paused, etc.)
+      Contract->>Contract: Append per-user skip result
+    else Eligible to charge
+      Contract->>Token: allowance(user, contract)
+      Token-->>Contract: Current allowance
+      alt Allowance below gross subscription amount
+        Contract->>Contract: Append AllowanceInsufficient
+        Note over Contract,Token: No transfer_from call; continue to next user
+      else Allowance sufficient
+        Contract->>Token: transfer_from(...)
+        Token-->>Contract: Transfer succeeds
+        Contract->>Events: Publish charged event
+        Contract->>Contract: Append Charged
+      end
+    end
+  end
+  opt Interesting skip results occurred
+    Contract->>Events: Publish batch_charge_skips summary
+  end
+  Contract-->>Keeper: Return ordered per-user results
+```
+
 ### Worked XDR example
 
 Three addresses submitted, producing `Charged`, `Skipped`, and
