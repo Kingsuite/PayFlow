@@ -4,7 +4,7 @@ This document provides a complete reference for all events emitted by the FlowPa
 
 > **Building on these events?** This file is the payload/schema reference. For polling Soroban RPC, deduplication, reaction patterns (keeper / analytics / notifications / reconciliation), ordering, and reliability, see the companion cookbook: [`docs/EVENT-DRIVEN-GUIDE.md`](EVENT-DRIVEN-GUIDE.md). Reference scripts: [`scripts/watch-events.ts`](../scripts/watch-events.ts), [`scripts/replay-events.ts`](../scripts/replay-events.ts).
 
-> **Catalog version:** Synchronized with `contract/src/events.rs` as of 2026-08-27. All 40 `publish_*` helpers are documented below.
+> **Catalog version:** Synchronized with `contract/src/events.rs` as of 2026-09-26. All 53 `publish_*` helpers are documented below.
 
 ## Permanent abbreviated topics
 
@@ -388,6 +388,52 @@ Events related to subscription configuration changes.
   }
   ```
 
+### metadata_set
+
+- **Trigger**: `set_metadata()`
+- **Topic keys**: `["metadata_set", user_address]`
+- **Payload schema**:
+  ```rust
+  {
+    user: Address,
+    label: String,
+    ledger_sequence: u32
+  }
+  ```
+- **JSON example**:
+  ```json
+  {
+    "topic": ["metadata_set", "GABC...XYZ"],
+    "data": {
+      "user": "GABC...XYZ",
+      "label": "pro",
+      "ledger_sequence": 12345
+    }
+  }
+  ```
+
+### metadata_cleared
+
+- **Trigger**: `clear_metadata()`
+- **Topic keys**: `["metadata_cleared", user_address]`
+- **Payload schema**:
+  ```rust
+  {
+    user: Address,
+    ledger_sequence: u32
+  }
+  ```
+- **JSON example**:
+  ```json
+  {
+    "topic": ["metadata_cleared", "GABC...XYZ"],
+    "data": {
+      "user": "GABC...XYZ",
+      "ledger_sequence": 12345
+    }
+  }
+  ```
+
 ---
 
 ## Admin Events
@@ -417,6 +463,28 @@ Events related to admin operations.
   {
     "topic": ["contract_unpaused"],
     "data": []
+  }
+  ```
+
+### admin_transfer_proposed
+
+- **Trigger**: `transfer_admin()` (step 1 of two-step admin transfer)
+- **Topic keys**: `["admin_transfer_proposed", new_admin_address]`
+- **Payload schema**:
+  ```rust
+  {
+    new_admin: Address,
+    ledger_sequence: u32
+  }
+  ```
+- **JSON example**:
+  ```json
+  {
+    "topic": ["admin_transfer_proposed", "GNEW...ADMIN"],
+    "data": {
+      "new_admin": "GNEW...ADMIN",
+      "ledger_sequence": 12345
+    }
   }
   ```
 
@@ -460,6 +528,20 @@ Events related to admin operations.
   }
   ```
 
+### upg_cancelled
+
+- **Compatibility**: topic spelling is **permanent** (see [Permanent abbreviated topics](#permanent-abbreviated-topics)). Do not rename to `upgrade_cancelled`.
+- **Trigger**: Pending WASM upgrade cancelled (`cancel_pending_upgrade()`)
+- **Topic keys**: `["upg_cancelled"]`
+- **Payload schema**: `()`
+- **JSON example**:
+  ```json
+  {
+    "topic": ["upg_cancelled"],
+    "data": []
+  }
+  ```
+
 ### min_interval_set
 
 - **Trigger**: `set_min_interval()`
@@ -493,6 +575,55 @@ Events related to admin operations.
   {
     "topic": ["merch_hist_cleared"],
     "data": "GDEF...ABC"
+  }
+  ```
+
+### max_batch_size_set
+
+- **Trigger**: `set_max_batch_size()`
+- **Topic keys**: `["max_batch_size_set"]`
+- **Payload schema**:
+  ```rust
+  {
+    old: u32,
+    new: u32
+  }
+  ```
+- **JSON example**:
+  ```json
+  {
+    "topic": ["max_batch_size_set"],
+    "data": {
+      "old": 50,
+      "new": 100
+    }
+  }
+  ```
+
+### max_wl_batch_size_set
+
+- **Compatibility**: topic spelling is **permanent** (see [Permanent abbreviated topics](#permanent-abbreviated-topics)). Do not rename to `max_whitelist_batch_size_set`.
+- **Trigger**: `set_max_whitelist_batch_size()`
+- **Topic keys**: `["max_wl_batch_size_set"]`
+- **Payload schema**: `(old: u32, new: u32)`
+- **JSON example**:
+  ```json
+  {
+    "topic": ["max_wl_batch_size_set"],
+    "data": [50, 100]
+  }
+  ```
+
+### whitelist_enabled
+
+- **Trigger**: `set_whitelist_enabled()`
+- **Topic keys**: `["whitelist_enabled"]`
+- **Payload schema**: `enabled: bool`
+- **JSON example**:
+  ```json
+  {
+    "topic": ["whitelist_enabled"],
+    "data": true
   }
   ```
 
@@ -554,6 +685,45 @@ Events related to protocol fee configuration.
   }
   ```
 
+### merchant_fee_recipient_cleared
+
+- **Trigger**: Clearing a merchant's custom fee recipient (reverts to the global fee collector)
+- **Topic keys**: `["merchant_fee_recipient_cleared", merchant_address]`
+- **Payload schema**: `()`
+- **JSON example**:
+  ```json
+  {
+    "topic": ["merchant_fee_recipient_cleared", "GMERCH...ABC"],
+    "data": []
+  }
+  ```
+
+### fee_bounds_set
+
+- **Trigger**: `set_fee_bounds()`
+- **Topic keys**: `["fee_bounds_set"]`
+- **Payload schema**: `(min_bps: u32, max_bps: u32)`
+- **JSON example**:
+  ```json
+  {
+    "topic": ["fee_bounds_set"],
+    "data": [0, 10000]
+  }
+  ```
+
+### global_volume_cap_set
+
+- **Trigger**: `set_global_volume_cap()`
+- **Topic keys**: `["global_volume_cap_set"]`
+- **Payload schema**: `(old: i128, new: i128)`
+- **JSON example**:
+  ```json
+  {
+    "topic": ["global_volume_cap_set"],
+    "data": [50000000000000, 25000000000000]
+  }
+  ```
+
 ---
 
 ## Merchant Events
@@ -609,6 +779,65 @@ Events related to merchant management.
   {
     "topic": ["merchant_unfrozen", "GDEF...ABC"],
     "data": []
+  }
+  ```
+
+### merchant_revenue_reset
+
+- **Trigger**: `reset_merchant_revenue()` (admin operation)
+- **Topic keys**: `["merchant_revenue_reset", merchant_address]`
+- **Payload schema**:
+  ```rust
+  {
+    merchant: Address,
+    ledger_sequence: u32
+  }
+  ```
+- **JSON example**:
+  ```json
+  {
+    "topic": ["merchant_revenue_reset", "GDEF...ABC"],
+    "data": {
+      "merchant": "GDEF...ABC",
+      "ledger_sequence": 12345
+    }
+  }
+  ```
+
+### merchant_revenue_pruned
+
+- **Trigger**: `prune_merchant_revenue_days()` (admin operation)
+- **Topic keys**: `["merchant_revenue_pruned", merchant_address]`
+- **Payload schema**:
+  ```rust
+  {
+    merchant: Address,
+    removed_days: u32,
+    ledger_sequence: u32
+  }
+  ```
+- **JSON example**:
+  ```json
+  {
+    "topic": ["merchant_revenue_pruned", "GDEF...ABC"],
+    "data": {
+      "merchant": "GDEF...ABC",
+      "removed_days": 30,
+      "ledger_sequence": 12345
+    }
+  }
+  ```
+
+### merchant_withdrawal
+
+- **Trigger**: `withdraw_merchant_revenue()`
+- **Topic keys**: `["merchant_withdrawal", merchant_address]`
+- **Payload schema**: `amount: i128`
+- **JSON example**:
+  ```json
+  {
+    "topic": ["merchant_withdrawal", "GDEF...ABC"],
+    "data": 1000000000
   }
   ```
 

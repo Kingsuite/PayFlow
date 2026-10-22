@@ -53,6 +53,8 @@ The indexer maintains the following indexes on `events`:
 | pause | `paused` / `subscription_paused` | user_address | `event_name='paused', address=user` |
 | resume | `resumed` / `subscription_auto_resumed` | user_address | `event_name='resumed', address=user` |
 | transfer | `subscription_transferred` | from_user | `event_name='subscription_transferred', address=from_user, raw_data={to_user, ...}` |
+| metadata set | `metadata_set` | user_address | `event_name='metadata_set', address=user, raw_data={label, ...}` |
+| metadata cleared | `metadata_cleared` | user_address | `event_name='metadata_cleared', address=user` |
 
 **Note:** The `cancelled` event is emitted by all cancellation paths (single cancel, batch_cancel). The `batch_cancel` function returns a `CancelResult` enum (discriminants 0-4) describing the outcome per user, but does not emit per-user events beyond the standard `cancelled` event.
 **Note:** As of the latest contract version, `batch_cancel` distinguishes between
@@ -67,6 +69,7 @@ event; the distinction is in the return value discriminant. See `docs/cancel-res
 | charge success | `charged` | user_address | `event_name='charged', address=user, amount=gross, fee_amount=fee, merchant=merchant, raw_data={..., paid_to: fee_recipient}` | ✓ Confirms successful charge |
 | batch summary | `batch_charge_skips` | (none) | `event_name='batch_charge_skips', raw_data={total, charged, allowance_insufficient, ...}` | **✓ CHARGE FAILURE SIGNAL** |
 | pay-per-use | `pay_per_use` | user_address | `event_name='pay_per_use', address=user, amount=amount, merchant=merchant` | Instant payment (not batch) |
+| merchant withdrawal | `merchant_withdrawal` | merchant_address | `event_name='merchant_withdrawal', address=merchant, amount=withdrawn_amount` | Merchant revenue withdrawal |
 
 > **Note on `charged` fee auditability (`paid_to`)**: `ChargeEventData` carries `paid_to: Option<Address>` as its trailing field, recording the fee recipient address (`MerchantFeeRecipient` if configured, otherwise the global `FeeCollector`, or `null` if no fee was transferred). This field is captured in SQLite in the `raw_data` JSON column for auditability and compliance reporting.
 
@@ -89,7 +92,15 @@ event; the distinction is in the return value discriminant. See `docs/cancel-res
 | contract unpaused | `contract_unpaused` | (none) | `event_name='contract_unpaused'` |
 | upgrade proposed | `upg_proposed` | (none) | `event_name='upg_proposed', raw_data={wasm_hash}` |
 | upgrade cancelled | `upg_cancelled` | (none) | `event_name='upg_cancelled'` |
+| max batch size | `max_batch_size_set` | (none) | `event_name='max_batch_size_set', raw_data={old, new}` |
 | max whitelist batch size | `max_wl_batch_size_set` | (none) | `event_name='max_wl_batch_size_set', raw_data={old, new}` |
+| whitelist enabled | `whitelist_enabled` | (none) | `event_name='whitelist_enabled', raw_data={enabled}` |
+| fee bounds set | `fee_bounds_set` | (none) | `event_name='fee_bounds_set', raw_data={min_bps, max_bps}` |
+| global volume cap set | `global_volume_cap_set` | (none) | `event_name='global_volume_cap_set', raw_data={old, new}` |
+| admin transfer proposed | `admin_transfer_proposed` | new_admin | `event_name='admin_transfer_proposed', address=new_admin, raw_data={new_admin, ledger_sequence}` |
+| merchant fee recipient cleared | `merchant_fee_recipient_cleared` | merchant | `event_name='merchant_fee_recipient_cleared', address=merchant` |
+| merchant revenue reset | `merchant_revenue_reset` | merchant | `event_name='merchant_revenue_reset', address=merchant` |
+| merchant revenue pruned | `merchant_revenue_pruned` | merchant | `event_name='merchant_revenue_pruned', address=merchant, raw_data={removed_days, ...}` |
 | merchant history cleared | `merch_hist_cleared` | merchant | `event_name='merch_hist_cleared', address=merchant` |
 | upgrade completed | `upgrade` | (none) | `event_name='upgrade'` |
 
