@@ -256,8 +256,6 @@ docs/
 │   ├── network-matrix.md
 │   ├── performance-benchmarking.md
 │   └── testing_runbook.md
-├── integrations/
-│   └── frontend_integration.md
 ├── operations/
 │   ├── keeper_runbook.md
 │   ├── troubleshooting.md
